@@ -1,10 +1,7 @@
 package google
 
 import (
-	"fmt"
-
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
-	"google.golang.org/api/storagetransfer/v1"
 )
 
 // resourceFirestoreTtlPolicy returns a *schema.Resource that allows a customer
@@ -30,13 +27,13 @@ func resourceFirestoreTtlPolicy() *schema.Resource {
 				Type:        schema.TypeString,
 				Required:    true,
 				ForceNew:    true,
-				Description: `Foobar.`,
+				Description: `Collection group that the time-to-live policy should be applied on.`,
 			},
 			"timestamp_field": {
 				Type:        schema.TypeString,
 				Required:    true,
 				ForceNew:    true,
-				Description: `Foobar.`,
+				Description: `Field that represents the time-to-live policy expiration time for documents in a given collection group.`,
 			},
 		},
 		UseJSONNumber: true,
@@ -54,34 +51,16 @@ func resourceFirestoreTtlPolicyCreate(d *schema.ResourceData, meta interface{}) 
 	if err != nil {
 		return err
 	}
+}
 
-	transferJob := &storagetransfer.TransferJob{
-		Description:        d.Get("description").(string),
-		ProjectId:          project,
-		Status:             d.Get("status").(string),
-		Schedule:           expandTransferSchedules(d.Get("schedule").([]interface{})),
-		TransferSpec:       expandTransferSpecs(d.Get("transfer_spec").([]interface{})),
-		NotificationConfig: expandTransferJobNotificationConfig(d.Get("notification_config").([]interface{})),
-	}
+func resourceFirestoreTtlPolicyRead(d *schema.ResourceData, meta interface{}) error {
+	return nil
+}
 
-	var res *storagetransfer.TransferJob
+func resourceFirestoreTtlPolicyUpdate(d *schema.ResourceData, meta interface{}) error {
+	return nil
+}
 
-	err = retry(func() error {
-		res, err = config.NewStorageTransferClient(userAgent).TransferJobs.Create(transferJob).Do()
-		return err
-	})
-
-	if err != nil {
-		fmt.Printf("Error creating transfer job %v: %v", transferJob, err)
-		return err
-	}
-
-	if err := d.Set("name", res.Name); err != nil {
-		return fmt.Errorf("Error setting name: %s", err)
-	}
-
-	name := GetResourceNameFromSelfLink(res.Name)
-	d.SetId(fmt.Sprintf("%s/%s", project, name))
-
-	return resourceStorageTransferJobRead(d, meta)
+func resourceFirestoreTtlPolicyDelete(d *schema.ResourceData, meta interface{}) error {
+	return nil
 }
