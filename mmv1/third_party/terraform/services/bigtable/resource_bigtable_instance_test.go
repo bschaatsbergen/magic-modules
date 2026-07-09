@@ -8,6 +8,10 @@ import (
 
 	"github.com/hashicorp/terraform-provider-google/google/acctest"
 	"github.com/hashicorp/terraform-provider-google/google/envvar"
+	"github.com/hashicorp/terraform-provider-google/google/services/bigtable"
+	"github.com/hashicorp/terraform-provider-google/google/services/kms"
+	_ "github.com/hashicorp/terraform-provider-google/google/services/resourcemanager"
+	_ "github.com/hashicorp/terraform-provider-google/google/services/tags"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
@@ -177,8 +181,8 @@ func TestAccBigtableInstance_kms(t *testing.T) {
 	acctest.SkipIfVcr(t)
 	t.Parallel()
 
-	kms1 := acctest.BootstrapKMSKeyInLocation(t, "us-central1")
-	kms2 := acctest.BootstrapKMSKeyInLocation(t, "us-east1")
+	kms1 := kms.BootstrapKMSKeyInLocation(t, "us-central1")
+	kms2 := kms.BootstrapKMSKeyInLocation(t, "us-east1")
 	pid := envvar.GetTestProjectFromEnv()
 	instanceName := fmt.Sprintf("tf-test-%s", acctest.RandString(t, 10))
 
@@ -196,7 +200,7 @@ func TestAccBigtableInstance_kms(t *testing.T) {
 				ImportStateVerify:       true,
 				ImportStateVerifyIgnore: []string{"deletion_protection", "instance_type"}, // we don't read instance type back
 			},
-			// TODO(kevinsi4508): Verify that the instance can be recreated due to `kms_key_name` change.
+			// TODO: Verify that the instance can be recreated due to `kms_key_name` change.
 			{
 				Config:             testAccBigtableInstance_kms(pid, instanceName, kms2.CryptoKey.Name, 3),
 				PlanOnly:           true,
@@ -237,6 +241,58 @@ func TestAccBigtableInstance_createWithAutoscalingAndUpdate(t *testing.T) {
 				Config: testAccBigtableInstance_autoscalingCluster(instanceName, 1, 5, 80),
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttr("google_bigtable_instance.instance", "cluster.0.autoscaling_config.0.storage_target", "8192"),
+				),
+			},
+			{
+				ResourceName:            "google_bigtable_instance.instance",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"deletion_protection", "instance_type"}, // we don't read instance type back
+			},
+		},
+	})
+}
+
+func TestAccBigtableInstance_createWithAutoscalingAndCreateAnotherOne(t *testing.T) {
+	// bigtable instance does not use the shared HTTP client, this test creates an instance
+	acctest.SkipIfVcr(t)
+	t.Parallel()
+
+	instanceName := fmt.Sprintf("tf-test-%s", acctest.RandString(t, 10))
+
+	acctest.VcrTest(t, resource.TestCase{
+		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
+		CheckDestroy:             testAccCheckBigtableInstanceDestroyProducer(t),
+		Steps: []resource.TestStep{
+			{
+				// Create Autoscaling config with 1 nodes. Default storage_target is set by service based on storage type.
+				Config: testAccBigtableInstance_autoscalingClusterWithZone(instanceName, "us-central1-a", 1, 3, 70),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("google_bigtable_instance.instance", "cluster.0.cluster_id", fmt.Sprintf("%s-c1", instanceName)),
+					resource.TestCheckResourceAttr("google_bigtable_instance.instance", "cluster.0.autoscaling_config.0.min_nodes", "1"),
+					resource.TestCheckResourceAttr("google_bigtable_instance.instance", "cluster.0.autoscaling_config.0.max_nodes", "3"),
+					resource.TestCheckResourceAttr("google_bigtable_instance.instance", "cluster.0.autoscaling_config.0.cpu_target", "70"),
+				),
+			},
+			{
+				ResourceName:            "google_bigtable_instance.instance",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"deletion_protection", "instance_type"}, // we don't read instance type back
+			},
+			{
+				// Create another cluster
+				Config: testAccBigtableInstance_2autoscalingClustersWithZone(instanceName, "us-central1-a", "us-central1-b", 1, 3, 70),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("google_bigtable_instance.instance", "cluster.0.cluster_id", fmt.Sprintf("%s-c1", instanceName)),
+					resource.TestCheckResourceAttr("google_bigtable_instance.instance", "cluster.0.autoscaling_config.0.min_nodes", "1"),
+					resource.TestCheckResourceAttr("google_bigtable_instance.instance", "cluster.0.autoscaling_config.0.max_nodes", "3"),
+					resource.TestCheckResourceAttr("google_bigtable_instance.instance", "cluster.0.autoscaling_config.0.cpu_target", "70"),
+					resource.TestCheckResourceAttr("google_bigtable_instance.instance", "cluster.1.cluster_id", fmt.Sprintf("%s-c2", instanceName)),
+					resource.TestCheckResourceAttr("google_bigtable_instance.instance", "cluster.1.autoscaling_config.0.min_nodes", "1"),
+					resource.TestCheckResourceAttr("google_bigtable_instance.instance", "cluster.1.autoscaling_config.0.max_nodes", "3"),
+					resource.TestCheckResourceAttr("google_bigtable_instance.instance", "cluster.1.autoscaling_config.0.cpu_target", "70"),
 				),
 			},
 			{
@@ -388,7 +444,7 @@ func testAccCheckBigtableInstanceDestroyProducer(t *testing.T) func(s *terraform
 			}
 
 			config := acctest.GoogleProviderConfig(t)
-			c, err := config.BigTableClientFactory(config.UserAgent).NewInstanceAdminClient(config.Project)
+			c, err := bigtable.NewClientFactory(config, config.UserAgent).NewInstanceAdminClient(config.Project)
 			if err != nil {
 				return fmt.Errorf("Error starting instance admin client. %s", err)
 			}
@@ -492,6 +548,265 @@ func TestAccBigtableInstance_forceDestroyBackups(t *testing.T) {
 			},
 		},
 	})
+}
+
+func TestAccBigtableInstance_createWithNodeScalingFactorDefault(t *testing.T) {
+	// bigtable instance does not use the shared HTTP client, this test creates an instance
+	acctest.SkipIfVcr(t)
+	t.Parallel()
+
+	instanceName := fmt.Sprintf("tf-test-nsf-%s", acctest.RandString(t, 10))
+
+	acctest.VcrTest(t, resource.TestCase{
+		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
+		CheckDestroy:             testAccCheckBigtableInstanceDestroyProducer(t),
+		Steps: []resource.TestStep{
+			{
+				// Create config with nothing specified for node scaling factor.
+				// Ensure that we get 1X back.
+				Config: testAccBigtableInstance_nodeScalingFactor(instanceName, 2, "", false),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("google_bigtable_instance.instance", "cluster.0.num_nodes", "2"),
+					resource.TestCheckResourceAttr("google_bigtable_instance.instance", "cluster.0.node_scaling_factor", "NodeScalingFactor1X"),
+				),
+			},
+			{
+				ResourceName:            "google_bigtable_instance.instance",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"deletion_protection", "instance_type"}, // we don't read instance type back
+			},
+		},
+	})
+}
+
+func TestAccBigtableInstance_createWithNodeScalingFactorThenUpdateViaForceNew(t *testing.T) {
+	// bigtable instance does not use the shared HTTP client, this test creates an instance
+	acctest.SkipIfVcr(t)
+	t.Parallel()
+
+	instanceName := fmt.Sprintf("tf-test-nsf-%s", acctest.RandString(t, 10))
+
+	acctest.VcrTest(t, resource.TestCase{
+		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
+		CheckDestroy:             testAccCheckBigtableInstanceDestroyProducer(t),
+		Steps: []resource.TestStep{
+			{
+				// Create config with node scaling factor as 2x.
+				Config: testAccBigtableInstance_nodeScalingFactor(instanceName, 2, "NodeScalingFactor2X", false),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("google_bigtable_instance.instance", "cluster.0.num_nodes", "2"),
+					resource.TestCheckResourceAttr("google_bigtable_instance.instance", "cluster.0.node_scaling_factor", "NodeScalingFactor2X"),
+				),
+			},
+			{
+				ResourceName:            "google_bigtable_instance.instance",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"deletion_protection", "instance_type"}, // we don't read instance type back
+			},
+			{
+				// Updating the node scaling factor only possible without delete protection, as we need ForceNew
+				Config: testAccBigtableInstance_nodeScalingFactor(instanceName, 2, "NodeScalingFactor1X", false),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("google_bigtable_instance.instance", "cluster.0.num_nodes", "2"),
+					resource.TestCheckResourceAttr("google_bigtable_instance.instance", "cluster.0.node_scaling_factor", "NodeScalingFactor1X"),
+				),
+			},
+			{
+				ResourceName:            "google_bigtable_instance.instance",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"deletion_protection", "instance_type"}, // we don't read instance type back
+			},
+		},
+	})
+}
+
+func TestAccBigtableInstance_tags(t *testing.T) {
+	// bigtable instance does not use the shared HTTP client, this test creates an instance
+	acctest.SkipIfVcr(t)
+	t.Parallel()
+
+	instanceName := fmt.Sprintf("tf-test-%s", acctest.RandString(t, 10))
+	pid := envvar.GetTestProjectFromEnv()
+
+	acctest.VcrTest(t, resource.TestCase{
+		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
+		CheckDestroy:             testAccCheckBigtableInstanceDestroyProducer(t),
+		Steps: []resource.TestStep{
+			{
+				Config:      testAccBigtableInstance_invalid(instanceName),
+				ExpectError: regexp.MustCompile("config is invalid: Too few cluster blocks: Should have at least 1 \"cluster\" block"),
+			},
+			{
+				Config: testAccBigtableInstance_tags(pid, instanceName),
+			},
+			{
+				ResourceName:            "google_bigtable_instance.instance",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"instance_type", "deletion_protection", "tags"}, // we don't read tags back
+			},
+		},
+	})
+}
+
+func TestAccBigtableInstance_createWithNodeScalingFactorThenFailFromDeletionProtection(t *testing.T) {
+	// bigtable instance does not use the shared HTTP client, this test creates an instance
+	acctest.SkipIfVcr(t)
+	t.Parallel()
+
+	instanceName := fmt.Sprintf("tf-test-nsf-%s", acctest.RandString(t, 10))
+
+	acctest.VcrTest(t, resource.TestCase{
+		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
+		CheckDestroy:             testAccCheckBigtableInstanceDestroyProducer(t),
+		Steps: []resource.TestStep{
+			{
+				// Create config with node scaling factor as 2x.
+				Config: testAccBigtableInstance_nodeScalingFactor(instanceName, 2, "NodeScalingFactor2X", true),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("google_bigtable_instance.instance", "cluster.0.node_scaling_factor", "NodeScalingFactor2X"),
+				),
+			},
+			{
+				ResourceName:            "google_bigtable_instance.instance",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"deletion_protection", "instance_type"}, // we don't read instance type back
+			},
+			{
+				// Updating the node scaling factor only possible without delete protection, should error
+				Config:      testAccBigtableInstance_nodeScalingFactor(instanceName, 2, "NodeScalingFactor1X", true),
+				ExpectError: regexp.MustCompile("deletion_protection"), // change in node_scaling_factor causes recreate which fails b/c of deletion_protection = true
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("google_bigtable_instance.instance", "cluster.0.node_scaling_factor", "NodeScalingFactor1X"),
+				),
+			},
+			{
+				ResourceName:            "google_bigtable_instance.instance",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"deletion_protection", "instance_type"}, // we don't read instance type back
+			},
+			{
+				// set deletion protection false to allow cleanup
+				Config: testAccBigtableInstance_nodeScalingFactor(instanceName, 2, "NodeScalingFactor2X", false),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("google_bigtable_instance.instance", "deletion_protection", "false"),
+				),
+			},
+		},
+	})
+}
+
+func TestAccBigtableInstance_addNewClusterWithoutDeletionProtection(t *testing.T) {
+	// bigtable instance does not use the shared HTTP client, this test creates an instance
+	acctest.SkipIfVcr(t)
+	t.Parallel()
+
+	instanceName := fmt.Sprintf("tf-test-nsf-%s", acctest.RandString(t, 10))
+
+	acctest.VcrTest(t, resource.TestCase{
+		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
+		CheckDestroy:             testAccCheckBigtableInstanceDestroyProducer(t),
+		Steps: []resource.TestStep{
+			{
+				// creates new instance, single cluster, deletion protection enabled
+				Config: testAccBigtableInstance_nodeScalingFactor(instanceName, 2, "NodeScalingFactor2X", true),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("google_bigtable_instance.instance", "cluster.0.num_nodes", "2"),
+					resource.TestCheckResourceAttr("google_bigtable_instance.instance", "cluster.0.node_scaling_factor", "NodeScalingFactor2X"),
+				),
+			},
+			{
+				ResourceName:            "google_bigtable_instance.instance",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"deletion_protection", "instance_type"}, // we don't read instance type back
+			},
+			{
+				// adds new cluster to instance (does not require recreate)
+				Config: testAccBigtableInstance_nodeScalingFactor_multipleClusters(instanceName, 2, "NodeScalingFactor2X", true),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("google_bigtable_instance.instance", "cluster.1.num_nodes", "2"),
+					resource.TestCheckResourceAttr("google_bigtable_instance.instance", "cluster.1.node_scaling_factor", "NodeScalingFactor2X"),
+				),
+			},
+			{
+				ResourceName:            "google_bigtable_instance.instance",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"deletion_protection", "instance_type"}, // we don't read instance type back
+			},
+			{
+				// set instance to have no deletion protection to allow cleanup
+				Config: testAccBigtableInstance_nodeScalingFactor_multipleClusters(instanceName, 2, "NodeScalingFactor2X", false),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("google_bigtable_instance.instance", "deletion_protection", "false"),
+				),
+			},
+		},
+	})
+}
+
+func testAccBigtableInstance_nodeScalingFactor(instanceName string, numNodes int, nodeScalingFactor string, deletionProtection bool) string {
+	nodeScalingFactorAttribute := ""
+	if nodeScalingFactor != "" {
+		nodeScalingFactorAttribute = fmt.Sprintf("node_scaling_factor = \"%s\"", nodeScalingFactor)
+	}
+	return fmt.Sprintf(`
+resource "google_bigtable_instance" "instance" {
+  name = "%s"
+  cluster {
+    cluster_id   = "%s"
+    zone         = "us-central1-b"
+    num_nodes    = %d
+    storage_type = "SSD"
+	%s
+  }
+  deletion_protection = %t
+}
+`, instanceName, instanceName, numNodes, nodeScalingFactorAttribute, deletionProtection)
+}
+
+func testAccBigtableInstance_nodeScalingFactor_multipleClusters(instanceName string, numNodes int, nodeScalingFactor string, deletionProtection bool) string {
+	nodeScalingFactorAttribute := ""
+	if nodeScalingFactor != "" {
+		nodeScalingFactorAttribute = fmt.Sprintf("node_scaling_factor = \"%s\"", nodeScalingFactor)
+	}
+	return fmt.Sprintf(`
+resource "google_bigtable_instance" "instance" {
+  name = "%s"
+  
+  cluster {
+    cluster_id   = "%s"
+    zone         = "us-central1-b"
+    num_nodes    = %d
+    storage_type = "SSD"
+	%s
+  }
+
+  cluster {
+    cluster_id   = "%s-2"
+    zone         = "us-east4-a"
+    num_nodes    = %d
+    storage_type = "SSD"
+	%s
+  }
+
+  deletion_protection = %t
+}
+`, instanceName,
+		instanceName, numNodes, nodeScalingFactorAttribute, // first cluster
+		instanceName, numNodes, nodeScalingFactorAttribute, // second cluster
+		deletionProtection)
 }
 
 func testAccBigtableInstance_multipleClustersSameID(instanceName string) string {
@@ -781,6 +1096,52 @@ func testAccBigtableInstance_autoscalingCluster(instanceName string, min int, ma
 	}`, instanceName, instanceName, min, max, cpuTarget)
 }
 
+func testAccBigtableInstance_autoscalingClusterWithZone(instanceName string, zone string, min int, max int, cpuTarget int) string {
+	return fmt.Sprintf(`resource "google_bigtable_instance" "instance" {
+		name = "%s"
+		cluster {
+			cluster_id   = "%s-c1"
+			storage_type = "HDD"
+			zone         = "%s"
+			autoscaling_config {
+				min_nodes = %d
+				max_nodes = %d
+				cpu_target = %d
+			}
+		}
+	  deletion_protection = false
+
+	}`, instanceName, instanceName, zone, min, max, cpuTarget)
+}
+
+func testAccBigtableInstance_2autoscalingClustersWithZone(instanceName string, zoneCluster1 string, zoneCluster2 string, min int, max int, cpuTarget int) string {
+	return fmt.Sprintf(`resource "google_bigtable_instance" "instance" {
+		name = "%s"
+		cluster {
+			cluster_id   = "%s-c1"
+			storage_type = "HDD"
+			zone         = "%s"
+			autoscaling_config {
+				min_nodes = %d
+				max_nodes = %d
+				cpu_target = %d
+			}
+		}
+		cluster {
+			cluster_id   = "%s-c2"
+			storage_type = "HDD"
+			zone         = "%s"
+			autoscaling_config {
+				min_nodes = %d
+				max_nodes = %d
+				cpu_target = %d
+			}
+		}
+	  deletion_protection = false
+
+	}`, instanceName, instanceName, zoneCluster1, min, max, cpuTarget, instanceName, zoneCluster2, min, max, cpuTarget)
+}
+
 func autoscalingClusterConfigWithStorageTarget(instanceName string, min int, max int, cpuTarget int, storageTarget int) string {
 	return fmt.Sprintf(`resource "google_bigtable_instance" "instance" {
 		name = "%s"
@@ -929,4 +1290,127 @@ resource "time_offset" "week-in-future" {
   offset_days = 7
 }
 `
+}
+
+func testAccBigtableInstance_tags(pid, instanceName string) string {
+	return fmt.Sprintf(`
+data "google_project" "project" {
+  project_id = "%s"
+}
+
+resource "google_tags_tag_key" "key" {
+  parent     = "projects/${data.google_project.project.project_id}"
+  short_name = "key-%s"
+}
+
+resource "google_tags_tag_value" "value" {
+  parent     = "tagKeys/${google_tags_tag_key.key.name}"
+  short_name = "value-%s"
+}
+
+resource "google_bigtable_instance" "instance" {
+  name = "%s"
+  cluster {
+    cluster_id   = "%s-a"
+    zone         = "us-central1-a"
+    num_nodes    = 1
+    storage_type = "HDD"
+  }
+  deletion_protection = false
+  tags = {
+	"${google_tags_tag_key.key.id}" = "${google_tags_tag_value.value.id}"
+  }
+  depends_on = [
+    google_tags_tag_value.value
+  ]
+}
+`, pid, instanceName, instanceName, instanceName, instanceName)
+}
+
+func TestAccBigtableInstance_edition(t *testing.T) {
+	// bigtable instance does not use the shared HTTP client, this test creates an instance
+	acctest.SkipIfVcr(t)
+	t.Parallel()
+
+	instanceName := fmt.Sprintf("tf-test-%s", acctest.RandString(t, 10))
+
+	acctest.VcrTest(t, resource.TestCase{
+		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
+		CheckDestroy:             testAccCheckBigtableInstanceDestroyProducer(t),
+		Steps: []resource.TestStep{
+			// Create as ENTERPRISE
+			{
+				Config: testAccBigtableInstance_edition(instanceName, "ENTERPRISE"),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("google_bigtable_instance.instance", "edition", "ENTERPRISE"),
+				),
+			},
+			{
+				ResourceName:            "google_bigtable_instance.instance",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"deletion_protection", "instance_type", "labels", "terraform_labels"},
+			},
+			// Upgrade to ENTERPRISE_PLUS
+			{
+				Config: testAccBigtableInstance_edition(instanceName, "ENTERPRISE_PLUS"),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("google_bigtable_instance.instance", "edition", "ENTERPRISE_PLUS"),
+				),
+			},
+			{
+				ResourceName:            "google_bigtable_instance.instance",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"deletion_protection", "instance_type", "labels", "terraform_labels"},
+			},
+		},
+	})
+}
+
+func TestAccBigtableInstance_editionEnterprisePlus(t *testing.T) {
+	// bigtable instance does not use the shared HTTP client, this test creates an instance
+	acctest.SkipIfVcr(t)
+	t.Parallel()
+
+	instanceName := fmt.Sprintf("tf-test-%s", acctest.RandString(t, 10))
+
+	acctest.VcrTest(t, resource.TestCase{
+		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
+		CheckDestroy:             testAccCheckBigtableInstanceDestroyProducer(t),
+		Steps: []resource.TestStep{
+			// Create directly as ENTERPRISE_PLUS
+			{
+				Config: testAccBigtableInstance_edition(instanceName, "ENTERPRISE_PLUS"),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("google_bigtable_instance.instance", "edition", "ENTERPRISE_PLUS"),
+				),
+			},
+			{
+				ResourceName:            "google_bigtable_instance.instance",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"deletion_protection", "instance_type", "labels", "terraform_labels"},
+			},
+		},
+	})
+}
+
+func testAccBigtableInstance_edition(instanceName, edition string) string {
+	return fmt.Sprintf(`
+resource "google_bigtable_instance" "instance" {
+  name          = "%s"
+  instance_type = "PRODUCTION"
+  edition       = "%s"
+  cluster {
+    cluster_id   = "%s"
+    zone         = "us-central1-b"
+    num_nodes    = 1
+    storage_type = "SSD"
+  }
+  deletion_protection = false
+}
+`, instanceName, edition, instanceName)
 }

@@ -1,4 +1,4 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright IBM Corp. 2014, 2026
 // SPDX-License-Identifier: MPL-2.0
 
 package changelog
@@ -25,6 +25,7 @@ var TypeValues = []string{
 	"note",
 	"none",
 	"new-resource",
+	"new-list-resource",
 	"new-datasource",
 	"deprecation",
 	"breaking-change",
@@ -37,7 +38,7 @@ var textInBodyREs = []*regexp.Regexp{
 	regexp.MustCompile("(?ms)^```releasenote:(?P<type>[^\r\n]*)\r?\n?(?P<note>.*?)\r?\n?```"),
 }
 
-var enhancementOrBugFixRegexp = regexp.MustCompile(`^[a-z0-9]+: .+$`)
+var enhancementOrBugFixRegexp = regexp.MustCompile(`^[a-z0-9_]+: .+$`)
 var newResourceOrDatasourceRegexp = regexp.MustCompile("`google_[a-z0-9_]+`")
 var newlineRegexp = regexp.MustCompile(`\n`)
 

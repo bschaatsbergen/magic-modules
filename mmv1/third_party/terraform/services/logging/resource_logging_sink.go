@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/hashicorp/terraform-provider-google/google/tpgresource"
+
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"google.golang.org/api/logging/v2"
 )
@@ -63,9 +65,10 @@ func resourceLoggingSinkSchema() map[string]*schema.Schema {
 						Description: `A description of this exclusion.`,
 					},
 					"filter": {
-						Type:        schema.TypeString,
-						Required:    true,
-						Description: `An advanced logs filter that matches the log entries to be excluded. By using the sample function, you can exclude less than 100% of the matching log entries`,
+						Type:             schema.TypeString,
+						Required:         true,
+						DiffSuppressFunc: OptionalSurroundingSpacesSuppress,
+						Description:      `An advanced logs filter that matches the log entries to be excluded. By using the sample function, you can exclude less than 100% of the matching log entries`,
 					},
 					"disabled": {
 						Type:        schema.TypeBool,
@@ -99,6 +102,10 @@ func resourceLoggingSinkSchema() map[string]*schema.Schema {
 				},
 			},
 		},
+
+		//UDP schema start
+		"deletion_policy": tpgresource.DeletionPolicySchemaEntry("DELETE"),
+		//UDP schema end
 	}
 }
 
@@ -160,6 +167,11 @@ func expandResourceLoggingSinkForUpdate(d *schema.ResourceData) (sink *logging.L
 		Description:     d.Get("description").(string),
 		Exclusions:      expandLoggingSinkExclusions(d.Get("exclusions")),
 		ForceSendFields: []string{"Destination", "Filter", "Disabled", "Exclusions"},
+	}
+
+	if v, ok := d.GetOkExists("include_children"); ok {
+		sink.IncludeChildren = v.(bool)
+		sink.ForceSendFields = append(sink.ForceSendFields, "IncludeChildren")
 	}
 
 	updateFields := []string{"exclusions"}

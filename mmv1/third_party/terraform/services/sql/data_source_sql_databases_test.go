@@ -9,6 +9,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 	"github.com/hashicorp/terraform-provider-google/google/acctest"
+	_ "github.com/hashicorp/terraform-provider-google/google/services/sql"
 )
 
 func TestAccDataSourceSqlDatabases_basic(t *testing.T) {
@@ -107,7 +108,7 @@ func checkDatabasesListDataSourceStateMatchesResourceStateWithIgnores(dataSource
 	}
 }
 
-// This function checks whether all the attributes of the database instance resource and the attributes of the datbase instance inside the data source list are the same
+// This function checks whether all the attributes of the database instance resource and the attributes of the database instance inside the data source list are the same
 func checkDatabaseFieldsMatchForDataSourceStateAndResourceState(dsAttr, rsAttr map[string]string, ignoreFields map[string]struct{}) error {
 	totalInstances, err := strconv.Atoi(dsAttr["databases.#"])
 	if err != nil {

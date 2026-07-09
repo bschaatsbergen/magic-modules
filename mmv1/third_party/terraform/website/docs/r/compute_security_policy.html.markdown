@@ -158,6 +158,31 @@ resource "google_compute_security_policy" "policy" {
 }
 ```
 
+## Example Usage - With advanced options config
+
+```hcl
+resource "google_compute_security_policy" "policy" {
+	name = "my-policy"
+
+  advanced_options_config {
+    json_parsing = "STANDARD"
+    json_custom_config {
+      content_types = [
+        "application/json",
+        "application/vnd.api+json",
+        "application/vnd.collection+json",
+        "application/vnd.hyper+json"
+      ]
+    }
+    log_level    = "VERBOSE"
+    user_ip_request_headers = [
+      "True-Client-IP",
+      "x-custom-ip"
+    ]
+  }
+}
+```
+
 ## Argument Reference
 
 The following arguments are supported:
@@ -191,6 +216,23 @@ The following arguments are supported:
   * `CLOUD_ARMOR_INTERNAL_SERVICE` - Cloud Armor internal service policies can be configured to filter HTTP requests targeting services
     managed by Traffic Director in a service mesh. They filter requests before the request is served from the application.
 
+* `labels` - Labels to apply to this address. A list of key->value pairs.
+  **Note**: This field is non-authoritative, and will only manage the labels present in your configuration.
+  Please refer to the field `effective_labels` for all of the labels present on the resource.
+
+* `effective_labels` - All of labels (key/value pairs) present on the resource in GCP, including the labels configured through Terraform, other clients and services.
+
+* `terraform_labels` - The combination of labels configured directly on the resource and default labels configured on the provider.
+
+* `label_fingerprint` - The unique fingerprint of the labels.
+
+* `deletion_policy` - (Optional) Whether Terraform will be prevented from destroying the resource. Defaults to "DELETE".
+    When a 'terraform destroy' or 'terraform apply' would delete the resource,
+    the command will fail if this field is set to "PREVENT" in Terraform state.
+    When set to "ABANDON", the command will remove the resource from Terraform
+    management without updating or deleting the resource in the API.
+    When set to "DELETE", deleting the resource is allowed.
+
 <a name="nested_advanced_options_config"></a>The `advanced_options_config` block supports:
 
 * `json_parsing` - Whether or not to JSON parse the payload body. Defaults to `DISABLED`.
@@ -206,6 +248,8 @@ The following arguments are supported:
   * `VERBOSE` - Verbose log level.
 
 * `user_ip_request_headers` - (Optional) An optional list of case-insensitive request header names to use for resolving the callers client IP address.
+
+* `request_body_inspection_size` - (Optional) The maximum request size chosen by the customer with Waf enabled. Values supported are "8KB", "16KB, "32KB", "48KB" and "64KB". Values are case insensitive.
 
 <a name="nested_json_custom_config"></a>The `json_custom_config` block supports:
 
@@ -229,7 +273,7 @@ The following arguments are supported:
 * `match` - (Required) A match condition that incoming traffic is evaluated against.
     If it evaluates to true, the corresponding `action` is enforced. Structure is [documented below](#nested_match).
 
-* `preconfigured_waf_config` - (Optional, [Beta](https://terraform.io/docs/providers/google/guides/provider_versions.html)) Preconfigured WAF configuration to be applied for the rule. If the rule does not evaluate preconfigured WAF rules, i.e., if `evaluatePreconfiguredWaf()` is not used, this field will have no effect. Structure is [documented below](#nested_preconfigured_waf_config).
+* `preconfigured_waf_config` - (Optional) Preconfigured WAF configuration to be applied for the rule. If the rule does not evaluate preconfigured WAF rules, i.e., if `evaluatePreconfiguredWaf()` is not used, this field will have no effect. Structure is [documented below](#nested_preconfigured_waf_config).
 
 * `description` - (Optional) An optional description of this rule. Max size is 64.
 
@@ -351,6 +395,7 @@ The following arguments are supported:
   * `SNI`: Server name indication in the TLS session of the HTTPS request. The key value is truncated to the first 128 bytes. The key type defaults to `ALL` on a HTTP session.
   * `REGION_CODE`: The country/region from which the request originates.
   * `TLS_JA3_FINGERPRINT`: JA3 TLS/SSL fingerprint if the client connects using HTTPS, HTTP/2 or HTTP/3. If not available, the key type defaults to ALL.
+  * `TLS_JA4_FINGERPRINT`: JA4 TLS/SSL fingerprint if the client connects using HTTPS, HTTP/2 or HTTP/3. If not available, the key type defaults to ALL.
   * `USER_IP`: The IP address of the originating client, which is resolved based on "user_ip_request_headers" configured with the securitypolicy. If there is no "user_ip_request_headers" configuration or an IP address cannot be resolved from it, the key type defaults to IP.
 
 * `enforce_on_key_name` - (Optional) Rate limit key name applicable only for the following key types:
@@ -358,7 +403,7 @@ The following arguments are supported:
   * `HTTP_HEADER` -- Name of the HTTP header whose value is taken as the key value.
   * `HTTP_COOKIE` -- Name of the HTTP cookie whose value is taken as the key value.
 
-* `enforce_on_key_configs` - (Optional, [Beta](https://terraform.io/docs/providers/google/guides/provider_versions.html)) If specified, any combination of values of enforce_on_key_type/enforce_on_key_name is treated as the key on which rate limit threshold/action is enforced. You can specify up to 3 enforce_on_key_configs. If `enforce_on_key_configs` is specified, `enforce_on_key` must be set to an empty string. Structure is [documented below](#nested_enforce_on_key_configs).
+* `enforce_on_key_configs` - (Optional, [Beta](../guides/provider_versions.html.markdown)) If specified, any combination of values of enforce_on_key_type/enforce_on_key_name is treated as the key on which rate limit threshold/action is enforced. You can specify up to 3 enforce_on_key_configs. If `enforce_on_key_configs` is specified, `enforce_on_key` must be set to an empty string. Structure is [documented below](#nested_enforce_on_key_configs).
 
   **Note:** To avoid the conflict between `enforce_on_key` and `enforce_on_key_configs`, the field [`enforce_on_key`](#enforce_on_key) needs to be set to an empty string.
 
@@ -380,6 +425,7 @@ The following arguments are supported:
     * `SNI`: Server name indication in the TLS session of the HTTPS request. The key value is truncated to the first 128 bytes. The key type defaults to `ALL` on a HTTP session.
     * `REGION_CODE`: The country/region from which the request originates.
     * `TLS_JA3_FINGERPRINT`: JA3 TLS/SSL fingerprint if the client connects using HTTPS, HTTP/2 or HTTP/3. If not available, the key type defaults to ALL.
+    * `TLS_JA4_FINGERPRINT`: JA4 TLS/SSL fingerprint if the client connects using HTTPS, HTTP/2 or HTTP/3. If not available, the key type defaults to ALL.
     * `USER_IP`: The IP address of the originating client, which is resolved based on "user_ip_request_headers" configured with the securitypolicy. If there is no "user_ip_request_headers" configuration or an IP address cannot be resolved from it, the key type defaults to IP.
 
 * `exceed_redirect_options` - (Optional) Parameters defining the redirect action that is used as the exceed action. Cannot be specified if the exceed action is not redirect. Structure is [documented below](#nested_exceed_redirect_options).
@@ -390,7 +436,7 @@ The following arguments are supported:
 
 * `interval_sec` - (Required) Interval over which the threshold is computed.
 
-* <a  name="nested_exceed_redirect_options"></a>The `exceed_redirect_options` block supports:
+<a  name="nested_exceed_redirect_options"></a>The `exceed_redirect_options` block supports:
 
 * `type` - (Required) Type of the redirect action.
 
@@ -419,7 +465,7 @@ The following arguments are supported:
 
 * `layer_7_ddos_defense_config` - (Optional) Configuration for [Google Cloud Armor Adaptive Protection Layer 7 DDoS Defense](https://cloud.google.com/armor/docs/adaptive-protection-overview?hl=en). Structure is [documented below](#nested_layer_7_ddos_defense_config).
 
-* `auto_deploy_config` - (Optional, [Beta](https://terraform.io/docs/providers/google/guides/provider_versions.html)) Configuration for [Automatically deploy Adaptive Protection suggested rules](https://cloud.google.com/armor/docs/adaptive-protection-auto-deploy?hl=en). Structure is [documented below](#nested_auto_deploy_config).
+* `auto_deploy_config` - (Optional, [Beta](../guides/provider_versions.html.markdown)) Configuration for [Automatically deploy Adaptive Protection suggested rules](https://cloud.google.com/armor/docs/adaptive-protection-auto-deploy?hl=en). Structure is [documented below](#nested_auto_deploy_config).
 
 <a name="nested_layer_7_ddos_defense_config"></a>The `layer_7_ddos_defense_config` block supports:
 
@@ -429,6 +475,39 @@ The following arguments are supported:
 
   * `STANDARD` - opaque rules. (default)
   * `PREMIUM` - transparent rules.
+
+* `threshold_configs` - (Optional) Configuration options for layer7 adaptive protection for various customizable thresholds. Structure is [documented below](#nested_threshold_configs).
+
+<a name="nested_threshold_configs"></a>The `threshold_configs` block supports:
+
+* `name` - The name of config. The name must be 1-63 characters long, and comply with RFC1035. The name must be unique within the security policy.
+
+* `auto_deploy_load_threshold` - (Optional) Load threshold above which Adaptive Protection automatically deploy threshold based on the backend load threshold and detect a new rule during an alerted attack.
+
+* `auto_deploy_confidence_threshold` - (Optional) Confidence threshold above which Adaptive Protection's auto-deploy takes actions.
+
+* `auto_deploy_impacted_baseline_threshold` - (Optional) Impacted baseline threshold below which Adaptive Protection's auto-deploy takes actions.
+
+* `auto_deploy_expiration_sec` - (Optional) Duration over which Adaptive Protection's auto-deployed actions last.
+
+* `detection_load_threshold` - (Optional) Detection threshold based on the backend service's load.
+
+* `detection_absolute_qps` - (Optional) Detection threshold based on absolute QPS.
+
+* `detection_relative_to_baseline_qps` - (Optional) Detection threshold based on QPS relative to the average of baseline traffic.
+
+* `traffic_granularity_configs` - (Optional) Configuration options for enabling Adaptive Protection to work on the specified service granularity. Structure is [documented below](#nested_traffic_granularity_configs).
+
+<a name="nested_traffic_granularity_configs"></a>The `traffic_granularity_configs` block supports:
+
+* `type` - The type of this configuration, a granular traffic unit can be one of the following:
+  * `HTTP_HEADER_HOST`
+  * `HTTP_PATH`
+
+* `value` - (Optional) Requests that match this value constitute a granular traffic unit.
+
+* `enable_each_unique_value` - (Optional) If enabled, traffic matching each unique value for the specified type constitutes a separate traffic unit. It can only be set to true if value is empty.
+
 
 <a name="nested_auto_deploy_config"></a>The `auto_deploy_config` block supports:
 
@@ -454,6 +533,15 @@ exported:
 * `fingerprint` - Fingerprint of this resource.
 
 * `self_link` - The URI of the created resource.
+
+## Timeouts
+
+This resource provides the following
+[Timeouts](https://developer.hashicorp.com/terraform/plugin/sdkv2/resources/retries-and-customizable-timeouts) configuration options: configuration options:
+
+- `create` - Default is 60 minutes.
+- `update` - Default is 60 minutes.
+- `delete` - Default is 60 minutes.
 
 ## Import
 

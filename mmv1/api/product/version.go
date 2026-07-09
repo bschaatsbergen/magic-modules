@@ -14,47 +14,45 @@
 package product
 
 import (
+	"log"
+
 	"golang.org/x/exp/slices"
 )
 
-// require 'api/object'
-
-var ORDER = []string{"ga", "beta", "alpha", "private"}
+var ORDER = []string{"ga", "beta", "nightly", "alpha", "private", "internal"}
 
 // A version of the API for a given product / API group
 // In GCP, different product versions are generally ordered where alpha is
 // a superset of beta, and beta a superset of GA. Each version will have a
 // different version url.
 type Version struct {
-	// TODO: Should embed NamedObject or not?
-	// < Api::NamedObject
-	// include Comparable
+	CaiBaseUrl       string `yaml:"cai_base_url,omitempty"`
+	CaiLegacyBaseUrl string `yaml:"cai_legacy_base_url,omitempty"`
+	BaseUrl          string `yaml:"base_url"`
+	Name             string
+	RepUrl           string `yaml:"rep_url,omitempty"`
 
-	// attr_reader
-	CaiBaseUrl string `yaml:"cai_base_url"`
-
-	// attr_accessor
-	BaseUrl string `yaml:"base_url"`
-
-	// attr_accessor
-	Name string
+	// EXPERIMENTAL: RPC settings are not fully implemented, and should not be
+	// used at this time.
+	RPCAddress string `yaml:"rpc_address,omitempty"`
+	RPCPackage string `yaml:"rpc_package,omitempty"`
 }
 
-// def validate
-//   super
-//   check :cai_base_url, type: String, required: false
-//   check :base_url, type: String, required: true
-//   check :name, type: String, allowed: ORDER, required: true
-// end
-
-// def to_s
-//   "//{name}: //{base_url}"
-// end
-
-// def <=>(other)
-//   ORDER.index(name) <=> ORDER.index(other.name) if other.is_a?(Version)
-// end
+func (v *Version) Validate(pName string) {
+	if v.Name == "" {
+		log.Fatalf("Missing `name` in `version` for product %s", pName)
+	}
+	if v.BaseUrl == "" {
+		log.Fatalf("Missing `base_url` in `version` for product %s", pName)
+	}
+}
 
 func (v *Version) CompareTo(other *Version) int {
 	return slices.Index(ORDER, v.Name) - slices.Index(ORDER, other.Name)
+}
+
+// Whether this version supports regionalized endpoints (REP). The default
+// of regional vs global is controlled at the product level
+func (v *Version) RepEnabled() bool {
+	return v.RepUrl != ""
 }

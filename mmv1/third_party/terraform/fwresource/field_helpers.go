@@ -9,18 +9,27 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
-	"github.com/hashicorp/terraform-provider-google/google/fwtransport"
+	"github.com/hashicorp/terraform-provider-google/google/registry"
 	"github.com/hashicorp/terraform-provider-google/google/tpgresource"
+	transport_tpg "github.com/hashicorp/terraform-provider-google/google/transport"
 )
 
 // GetProject reads the "project" field from the given resource and falls
 // back to the provider's value if not given. If the provider's value is not
 // given, an error is returned.
 func GetProjectFramework(rVal, pVal types.String, diags *diag.Diagnostics) types.String {
-	return getProjectFromFrameworkSchema("project", rVal, pVal, diags)
+	return getProviderDefaultFromFrameworkSchema("project", rVal, pVal, diags)
 }
 
-func getProjectFromFrameworkSchema(projectSchemaField string, rVal, pVal types.String, diags *diag.Diagnostics) types.String {
+func GetRegionFramework(rVal, pVal types.String, diags *diag.Diagnostics) types.String {
+	return getProviderDefaultFromFrameworkSchema("region", rVal, pVal, diags)
+}
+
+func GetZoneFramework(rVal, pVal types.String, diags *diag.Diagnostics) types.String {
+	return getProviderDefaultFromFrameworkSchema("zone", rVal, pVal, diags)
+}
+
+func getProviderDefaultFromFrameworkSchema(schemaField string, rVal, pVal types.String, diags *diag.Diagnostics) types.String {
 	if !rVal.IsNull() && rVal.ValueString() != "" {
 		return rVal
 	}
@@ -29,7 +38,7 @@ func getProjectFromFrameworkSchema(projectSchemaField string, rVal, pVal types.S
 		return pVal
 	}
 
-	diags.AddError("required field is not set", fmt.Sprintf("%s is not set", projectSchemaField))
+	diags.AddError("required field is not set", fmt.Sprintf("%s must be set in at least one of Terraform resource configuration, Terraform provider configuration, or environment variables.", schemaField))
 	return types.String{}
 }
 
@@ -54,7 +63,7 @@ func ParseProjectFieldValueFramework(resourceType, fieldValue, projectSchemaFiel
 		}
 	}
 
-	project := getProjectFromFrameworkSchema(projectSchemaField, rVal, pVal, diags)
+	project := getProviderDefaultFromFrameworkSchema(projectSchemaField, rVal, pVal, diags)
 	if diags.HasError() {
 		return nil
 	}
@@ -69,7 +78,7 @@ func ParseProjectFieldValueFramework(resourceType, fieldValue, projectSchemaFiel
 
 // This function isn't a test of transport.go; instead, it is used as an alternative
 // to ReplaceVars inside tests.
-func ReplaceVarsForFrameworkTest(prov *fwtransport.FrameworkProviderConfig, rs *terraform.ResourceState, linkTmpl string) (string, error) {
+func ReplaceVarsForFrameworkTest(config *transport_tpg.Config, rs *terraform.ResourceState, linkTmpl string) (string, error) {
 	re := regexp.MustCompile("{{([[:word:]]+)}}")
 	var project, region, zone string
 
@@ -101,8 +110,13 @@ func ReplaceVarsForFrameworkTest(prov *fwtransport.FrameworkProviderConfig, rs *
 			return v
 		}
 
-		// Attempt to draw values from the provider
-		if f := reflect.Indirect(reflect.ValueOf(prov)).FieldByName(m); f.IsValid() {
+		// Draw base path values from the provider config. For other config fields, fall back to reflection.
+		if pName, found := strings.CutSuffix(m, "BasePath"); found {
+			// the field will look like ComputeBasePath, but the product name will be like compute (just lowercase, no underscores)
+			p := registry.GetProduct(strings.ToLower(pName))
+			return transport_tpg.BaseUrl(p, config)
+		}
+		if f := reflect.Indirect(reflect.ValueOf(config)).FieldByName(m); f.IsValid() {
 			return f.String()
 		}
 
@@ -110,4 +124,11 @@ func ReplaceVarsForFrameworkTest(prov *fwtransport.FrameworkProviderConfig, rs *
 	}
 
 	return re.ReplaceAllStringFunc(linkTmpl, replaceFunc), nil
+}
+
+func FlattenStringEmptyToNull(configuredValue types.String, apiValue string) types.String {
+	if configuredValue.IsNull() && apiValue == "" {
+		return types.StringNull()
+	}
+	return types.StringValue(apiValue)
 }

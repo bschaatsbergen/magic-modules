@@ -104,6 +104,17 @@ resource "google_storage_transfer_job" "s3-bucket-nightly-backup" {
     payload_format = "JSON"
   }
 
+   logging_config {
+    log_actions       = [
+      "COPY",
+      "DELETE"
+    ]
+    log_action_states = [
+      "SUCCEEDED",
+      "FAILED"
+    ]
+  }
+
   depends_on = [google_storage_bucket_iam_member.s3-backup-bucket, google_pubsub_topic_iam_member.notification_config]
 }
 ```
@@ -116,7 +127,9 @@ The following arguments are supported:
 
 * `description` - (Required) Unique description to identify the Transfer Job.
 
-* `transfer_spec` - (Required) Transfer specification. Structure [documented below](#nested_transfer_spec).
+* `transfer_spec` - (Optional) Transfer specification. Structure [documented below](#nested_transfer_spec). One of `transfer_spec`, or `replication_spec` can be specified.
+
+* `replication_spec` - (Optional) Replication specification. Structure [documented below](#nested_replication_spec). User should not configure `schedule`, `event_stream` with this argument. One of `transfer_spec`, or `replication_spec` must be specified.
 
 - - -
 
@@ -127,9 +140,20 @@ The following arguments are supported:
 * `project` - (Optional) The project in which the resource belongs. If it
 	is not provided, the provider project is used.
 
+* `service_account` - (Optional) The user-managed service account to run the job. If this field is specified, the given service account is granted the necessary permissions to all applicable resources (e.g. GCS buckets) required by the job.
+
 * `status` - (Optional) Status of the job. Default: `ENABLED`. **NOTE: The effect of the new job status takes place during a subsequent job run. For example, if you change the job status from ENABLED to DISABLED, and an operation spawned by the transfer is running, the status change would not affect the current operation.**
 
 * `notification_config` - (Optional) Notification configuration. This is not supported for transfers involving PosixFilesystem. Structure [documented below](#nested_notification_config).
+
+* `logging_config` - (Optional) Logging configuration. Structure [documented below](#nested_logging_config).
+
+* `deletion_policy` - (Optional) Whether Terraform will be prevented from destroying the resource. Defaults to "DELETE".
+    When a 'terraform destroy' or 'terraform apply' would delete the resource,
+    the command will fail if this field is set to "PREVENT" in Terraform state.
+    When set to "ABANDON", the command will remove the resource from Terraform
+    management without updating or deleting the resource in the API.
+    When set to "DELETE", deleting the resource is allowed.
 
 <a name="nested_transfer_spec"></a>The `transfer_spec` block supports:
 
@@ -154,6 +178,22 @@ The following arguments are supported:
 * `http_data_source` - (Optional) A HTTP URL data source. Structure [documented below](#nested_http_data_source).
 
 * `azure_blob_storage_data_source` - (Optional) An Azure Blob Storage data source. Structure [documented below](#nested_azure_blob_storage_data_source).
+
+* `hdfs_data_source` - (Optional) An HDFS data source. Structure [documented below](#nested_hdfs_data_source).
+
+* `aws_s3_compatible_data_source` - (Optional) An AWS S3 Compatible data source. Structure [documented below](#nested_aws_s3_compatible_data_source).
+
+* `transfer_manifest` - (Optional) Use a manifest file to limit which object are transferred. See [Storage Transfer Service manifest file format](https://cloud.google.com/storage-transfer/docs/manifest). Structure [documented below](#nested_transfer_manifest).
+
+<a name="nested_replication_spec"></a>The `replication_spec` block supports:
+
+* `gcs_data_sink` - (Optional) A Google Cloud Storage data sink. Structure [documented below](#nested_gcs_data_sink).
+
+* `gcs_data_source` - (Optional) A Google Cloud Storage data source. Structure [documented below](#nested_gcs_data_source).
+
+* `object_conditions` - (Optional) Only objects that satisfy these object conditions are included in the set of data source and data sink objects. Object conditions based on objects' `last_modification_time` do not exclude objects in a data sink. Structure [documented below](#nested_object_conditions).
+
+* `transfer_options` - (Optional) Characteristics of how to treat files from datasource and sink during job. If the option `delete_objects_unique_in_sink` is true, object conditions based on objects' `last_modification_time` are ignored and do not exclude objects in a data source or a data sink. Structure [documented below](#nested_transfer_options).
 
 <a name="nested_schedule"></a>The `schedule` block supports:
 
@@ -199,6 +239,9 @@ A duration in seconds with up to nine fractional digits, terminated by 's'. Exam
 
 * `overwrite_when` - (Optional) When to overwrite objects that already exist in the sink. If not set, overwrite behavior is determined by `overwrite_objects_already_existing_in_sink`. Possible values: ALWAYS, DIFFERENT, NEVER.
 
+* `metadata_options` - (Optional) Specifies the metadata options for running a transfer. Structure [documented below](#nested_metadata_options).
+
+
 <a name="nested_gcs_data_sink"></a>The `gcs_data_sink` block supports:
 
 * `bucket_name` - (Required) Google Cloud Storage bucket name.
@@ -219,6 +262,33 @@ A duration in seconds with up to nine fractional digits, terminated by 's'. Exam
 
 * `root_directory` - (Required) Root directory path to the filesystem.
 
+<a name="nested_hdfs_data_source"></a>The `hdfs_data_source` block supports:
+
+* `path` - (Required) Root directory path to the filesystem.
+
+<a name="nested_aws_s3_compatible_data_source"></a>The `aws_s3_compatible_data_source` block supports:
+
+* `bucket_name` - (Required) Name of the bucket.
+
+* `path` - (Optional) Specifies the path to transfer objects.
+
+* `endpoint` - (Required) Endpoint of the storage service.
+
+* `region` - (Optional) Specifies the region to sign requests with. This can be left blank if requests should be signed with an empty region.
+
+* `s3_metadata` - (Optional) S3 compatible metadata. [documented below](#nested_s3_metadata).
+
+<a name="nested_s3_metadata"></a>The `s3_metadata` block supports:
+
+* `auth_method` - (Optional) Authentication and authorization method used by the storage service. When not specified, Transfer Service will attempt to determine right auth method to use.
+
+* `request_model` - (Optional) API request model used to call the storage service. When not specified, the default value of RequestModel REQUEST_MODEL_VIRTUAL_HOSTED_STYLE is used.
+
+* `protocol` - (Optional) The network protocol of the agent. When not specified, the default value of NetworkProtocol NETWORK_PROTOCOL_HTTPS is used.
+
+* `list_api` - (Optional) The Listing API to use for discovering objects. When not specified, Transfer Service will attempt to determine the right API to use.
+
+
 <a name="nested_aws_s3_data_source"></a>The `aws_s3_data_source` block supports:
 
 * `bucket_name` - (Required) S3 Bucket name.
@@ -228,6 +298,16 @@ A duration in seconds with up to nine fractional digits, terminated by 's'. Exam
 * `aws_access_key` - (Optional) AWS credentials block.
 
 * `role_arn` - (Optional) The Amazon Resource Name (ARN) of the role to support temporary credentials via 'AssumeRoleWithWebIdentity'. For more information about ARNs, see [IAM ARNs](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_identifiers.html#identifiers-arns). When a role ARN is provided, Transfer Service fetches temporary credentials for the session using a 'AssumeRoleWithWebIdentity' call for the provided role using the [GoogleServiceAccount][] for this project.
+
+* `managed_private_network` - (Optional) Egress bytes over a Google-managed private network. This network is shared between other users of Storage Transfer Service.
+
+* `cloudfront_domain` - (Optional) The CloudFront distribution domain name pointing to this bucket, to use when fetching. See [Transfer from S3 via CloudFront](https://cloud.google.com/storage-transfer/docs/s3-cloudfront) for more information. Format: `https://{id}.cloudfront.net` or any valid custom domain. Must begin with `https://`.
+
+* `credentials_secret` - (Optional)  The Resource name of a secret in Secret Manager. AWS credentials must be stored in Secret Manager in JSON format. If credentials_secret is specified, do not specify role_arn or aws_access_key. Format: `projects/{projectNumber}/secrets/{secret_name}`.
+
+<a name="nested_transfer_manifest"></a>The `transfer_manifest` block supports:
+
+* `location` - (Required) The **GCS URI** to the manifest file (CSV or line-delimited). Example: `gs://my-bucket/manifest.csv`
 
 The `aws_access_key` block supports:
 
@@ -247,13 +327,23 @@ The `aws_access_key` block supports:
 
 * `path` - (Required) Root path to transfer objects. Must be an empty string or full path name that ends with a '/'. This field is treated as an object prefix. As such, it should generally not begin with a '/'.
 
-* `credentials_secret` - (Optional, [Beta](https://terraform.io/docs/providers/google/guides/provider_versions.html)) Full Resource name of a secret in Secret Manager containing [SAS Credentials in JSON form](https://cloud.google.com/storage-transfer/docs/reference/rest/v1/TransferSpec#azureblobstoragedata:~:text=begin%20with%20a%20%27/%27.-,credentialsSecret,-string). Service Agent for Storage Transfer must have permissions to access secret. If credentials_secret is specified, do not specify azure_credentials.`,
+* `credentials_secret` - (Optional, (../guides/provider_versions.html.markdown)) Full Resource name of a secret in Secret Manager containing [SAS Credentials in JSON form](https://cloud.google.com/storage-transfer/docs/reference/rest/v1/TransferSpec#azureblobstoragedata:~:text=begin%20with%20a%20%27/%27.-,credentialsSecret,-string). Service Agent for Storage Transfer must have permissions to access secret. If credentials_secret is specified, do not specify azure_credentials.`,
 
-* `azure_credentials` - (Required in GA, Optional in [Beta](https://terraform.io/docs/providers/google/guides/provider_versions.html)) Credentials used to authenticate API requests to Azure block.
+* `azure_credentials` - (Optional, (../guides/provider_versions.html.markdown)) Credentials used to authenticate API requests to Azure block.
+
+* `federated_identity_config` - (Optional) Federated identity config of a user registered Azure application. Structure [documented below](#nested_federated_identity_config).
+
+* `private_network_service` - (Optional) Service Directory Service to be used as the endpoint for transfers from a customer-managed VPC. Format: `projects/{projectId}/locations/{location}/namespaces/{namespace}/services/{service}`.
 
 The `azure_credentials` block supports:
 
 * `sas_token` - (Required) Azure shared access signature. See [Grant limited access to Azure Storage resources using shared access signatures (SAS)](https://docs.microsoft.com/en-us/azure/storage/common/storage-sas-overview).
+
+<a name="nested_federated_identity_config"></a>The `federated_identity_config` block supports:
+
+* `client_id` - (Required) The client (application) ID of the application with federated credentials.
+
+* `tenant_id` - (Required) The client (directory) ID of the application with federated credentials.
 
 <a name="nested_schedule_start_end_date"></a>The `schedule_start_date` and `schedule_end_date` blocks support:
 
@@ -280,6 +370,37 @@ The `azure_credentials` block supports:
 * `event_types` - (Optional) Event types for which a notification is desired. If empty, send notifications for all event types. The valid types are "TRANSFER_OPERATION_SUCCESS", "TRANSFER_OPERATION_FAILED", "TRANSFER_OPERATION_ABORTED".
 
 * `payload_format` - (Required) The desired format of the notification message payloads. One of "NONE" or "JSON".
+
+<a name="nested_logging_config"></a>The `loggin_config` block supports:
+
+* `log_actions` - (Optional) A list of actions to be logged. If empty, no logs are generated. Not supported for transfers with PosixFilesystem data sources; use enableOnpremGcsTransferLogs instead.
+Each action may be one of `FIND`, `DELETE`, and `COPY`.
+
+* `log_action_states` - (Optional) A list of loggable action states. If empty, no logs are generated. Not supported for transfers with PosixFilesystem data sources; use enableOnpremGcsTransferLogs instead.
+Each action state may be one of `SUCCEEDED`, and `FAILED`.
+
+* `enable_on_prem_gcs_transfer` - (Optional) For transfers with a PosixFilesystem source, this option enables the Cloud Storage transfer logs for this transfer.
+Defaults to false.
+
+<a name="nested_metadata_options"></a>The `metadata_options` block supports:
+
+* `symlink` - (Optional) Specifies how symlinks should be handled by the transfer.
+
+* `mode` - (Optional) Specifies how each file's mode attribute should be handled by the transfer.
+
+* `gid` - (Required) Specifies how each file's POSIX group ID (GID) attribute should be handled by the transfer.
+
+* `uid` - (Optional) Specifies how each file's POSIX user ID (UID) attribute should be handled by the transfer.
+
+* `acl` - (Optional) Specifies how each object's ACLs should be preserved for transfers between Google Cloud Storage buckets.
+
+* `storage_class` - (Optional) Specifies the storage class to set on objects being transferred to Google Cloud Storage buckets.
+
+* `temporary_hold` - (Optional) Specifies how each object's temporary hold status should be preserved for transfers between Google Cloud Storage buckets.
+
+* `kms_key` - (Optional) Specifies how each object's Cloud KMS customer-managed encryption key (CMEK) is preserved for transfers between Google Cloud Storage buckets.
+
+* `time_created` - (Optional) Specifies how each object's timeCreated metadata is preserved for transfers.
 
 ## Attributes Reference
 

@@ -10,6 +10,8 @@ import (
 
 	"github.com/hashicorp/terraform-provider-google/google/acctest"
 	"github.com/hashicorp/terraform-provider-google/google/envvar"
+	"github.com/hashicorp/terraform-provider-google/google/services/orgpolicy"
+	_ "github.com/hashicorp/terraform-provider-google/google/services/resourcemanager"
 	"github.com/hashicorp/terraform-provider-google/google/tpgresource"
 	transport_tpg "github.com/hashicorp/terraform-provider-google/google/transport"
 )
@@ -77,7 +79,7 @@ func TestAccOrgPolicyPolicy_OrganizationPolicy(t *testing.T) {
 	t.Parallel()
 
 	context := map[string]interface{}{
-		"org_id":        envvar.GetTestOrgFromEnv(t),
+		"org_id":        envvar.GetTestOrgTargetFromEnv(t),
 		"random_suffix": acctest.RandString(t, 10),
 	}
 
@@ -97,6 +99,15 @@ func TestAccOrgPolicyPolicy_OrganizationPolicy(t *testing.T) {
 			},
 			{
 				Config: testAccOrgPolicyPolicy_OrganizationPolicyUpdate0(context),
+			},
+			{
+				ResourceName:            "google_org_policy_policy.primary",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"name", "spec.0.rules.0.condition.0.expression"},
+			},
+			{
+				Config: testAccOrgPolicyPolicy_DryRunSpecHandWritten(context),
 			},
 			{
 				ResourceName:            "google_org_policy_policy.primary",
@@ -138,24 +149,8 @@ func TestAccOrgPolicyPolicy_ProjectPolicy(t *testing.T) {
 				ImportStateVerify:       true,
 				ImportStateVerifyIgnore: []string{"name", "spec.0.rules.0.condition.0.expression"},
 			},
-		},
-	})
-}
-func TestAccOrgPolicyPolicy_DryRunSpecHandWritten(t *testing.T) {
-	t.Parallel()
-
-	context := map[string]interface{}{
-		"org_id":        envvar.GetTestOrgFromEnv(t),
-		"random_suffix": acctest.RandString(t, 10),
-	}
-
-	acctest.VcrTest(t, resource.TestCase{
-		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
-		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
-		CheckDestroy:             testAccCheckOrgPolicyPolicyDestroyProducer(t),
-		Steps: []resource.TestStep{
 			{
-				Config: testAccOrgPolicyPolicy_DryRunSpecHandWritten(context),
+				Config: testAccOrgPolicyPolicy_ProjectPolicyUpdate1(context),
 			},
 			{
 				ResourceName:            "google_org_policy_policy.primary",
@@ -257,7 +252,7 @@ resource "google_folder" "basic" {
 func testAccOrgPolicyPolicy_OrganizationPolicy(context map[string]interface{}) string {
 	return acctest.Nprintf(`
 resource "google_org_policy_custom_constraint" "constraint" {
-  name         = "custom.tfTest%{random_suffix}"
+  name         = "custom.tfTestdisableGkeAutoUpgrade%{random_suffix}"
   parent       = "organizations/%{org_id}"
   display_name = "Disable GKE auto upgrade"
   description  = "Only allow GKE NodePool resource to be created or updated if AutoUpgrade is not enabled where this custom constraint is enforced."
@@ -282,7 +277,7 @@ resource "google_org_policy_policy" "primary" {
 func testAccOrgPolicyPolicy_OrganizationPolicyUpdate0(context map[string]interface{}) string {
 	return acctest.Nprintf(`
 resource "google_org_policy_custom_constraint" "constraint" {
-  name         = "custom.tfTest%{random_suffix}"
+  name         = "custom.tfTestdisableGkeAutoUpgrade%{random_suffix}"
   parent       = "organizations/%{org_id}"
   display_name = "Disable GKE auto upgrade"
   description  = "Only allow GKE NodePool resource to be created or updated if AutoUpgrade is not enabled where this custom constraint is enforced."
@@ -384,17 +379,50 @@ resource "google_project" "basic" {
 `, context)
 }
 
+func testAccOrgPolicyPolicy_ProjectPolicyUpdate1(context map[string]interface{}) string {
+	return acctest.Nprintf(`
+resource "google_org_policy_policy" "primary" {
+  name   = "projects/${google_project.basic.name}/policies/gcp.resourceLocations"
+  parent = "projects/${google_project.basic.name}"
+
+  spec {
+	rules {
+	  deny_all = "TRUE"
+	}
+    rules {
+      allow_all = "TRUE"
+      condition {
+        description = "A sample condition for the policy"
+        expression  = "resource.matchTagId('tagKeys/123', 'tagValues/345')"
+        location    = "sample-location.log"
+        title       = "sample-condition"
+      }
+    }
+  }
+}
+
+resource "google_project" "basic" {
+  project_id = "tf-test-id%{random_suffix}"
+  name       = "tf-test-id%{random_suffix}"
+  org_id     = "%{org_id}"
+  deletion_policy = "DELETE"
+}
+
+
+`, context)
+}
+
 func testAccOrgPolicyPolicy_DryRunSpecHandWritten(context map[string]interface{}) string {
 	return acctest.Nprintf(`
 resource "google_org_policy_custom_constraint" "constraint" {
-  name         = "custom.disableGkeAutoUpgrade%{random_suffix}"
+  name         = "custom.tfTestdisableGkeAutoUpgrade%{random_suffix}"
   parent       = "organizations/%{org_id}"
   display_name = "Disable GKE auto upgrade"
   description  = "Only allow GKE NodePool resource to be created or updated if AutoUpgrade is not enabled where this custom constraint is enforced."
 
   action_type    = "ALLOW"
   condition      = "resource.management.autoUpgrade == false"
-  method_types   = ["CREATE"]
+  method_types   = ["CREATE", "UPDATE"]
   resource_types = ["container.googleapis.com/NodePool"]
 }
 
@@ -431,7 +459,7 @@ func testAccCheckOrgPolicyPolicyDestroyProducer(t *testing.T) func(s *terraform.
 
 			config := acctest.GoogleProviderConfig(t)
 
-			url, err := tpgresource.ReplaceVarsForTest(config, rs, "{{OrgPolicyBasePath}}{{parent}}/policies/{{name}}")
+			url, err := tpgresource.ReplaceVarsForTest(config, rs, transport_tpg.BaseUrl(orgpolicy.Product, config)+"{{parent}}/policies/{{name}}")
 			if err != nil {
 				return err
 			}
@@ -457,4 +485,107 @@ func testAccCheckOrgPolicyPolicyDestroyProducer(t *testing.T) func(s *terraform.
 
 		return nil
 	}
+}
+func TestAccOrgPolicyPolicy_EnforceParameterizedMCPolicy(t *testing.T) {
+	// Skip this test as no constraints yet launched in production, verified functionality with manual testing.
+	t.Skip()
+	t.Parallel()
+
+	context := map[string]interface{}{
+		"org_id":        envvar.GetTestOrgFromEnv(t),
+		"random_suffix": acctest.RandString(t, 10),
+	}
+
+	acctest.VcrTest(t, resource.TestCase{
+		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
+		CheckDestroy:             testAccCheckOrgPolicyPolicyDestroyProducer(t),
+		Steps: []resource.TestStep{
+			{
+				Config: testAccOrgPolicyPolicy_EnforceParameterizedMCPolicy(context),
+			},
+			{
+				ResourceName:            "google_org_policy_policy.primary",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"name", "spec.0.rules.0.condition.0.expression"},
+			},
+		},
+	})
+}
+func testAccOrgPolicyPolicy_EnforceParameterizedMCPolicy(context map[string]interface{}) string {
+	return acctest.Nprintf(`
+resource "google_org_policy_policy" "primary" {
+  name   = "projects/${google_project.basic.name}/policies/essentialcontacts.managed.allowedContactDomains"
+  parent = "projects/${google_project.basic.name}"
+
+  spec {
+    rules {
+      enforce = "TRUE"
+      parameters = "{\"allowedDomains\": [\"@google.com\"]}"
+    }
+  }
+}
+
+resource "google_project" "basic" {
+  project_id = "tf-test-id%{random_suffix}"
+  name       = "tf-test-id%{random_suffix}"
+  org_id     = "%{org_id}"
+  deletion_policy = "DELETE"
+}
+
+
+`, context)
+}
+
+func TestAccOrgPolicyPolicy_EnforceParameterizedMCDryRunPolicy(t *testing.T) {
+	// Skip this test as no constraints yet launched in production, verified functionality with manual testing.
+	t.Skip()
+	t.Parallel()
+
+	context := map[string]interface{}{
+		"org_id":        envvar.GetTestOrgFromEnv(t),
+		"random_suffix": acctest.RandString(t, 10),
+	}
+
+	acctest.VcrTest(t, resource.TestCase{
+		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
+		CheckDestroy:             testAccCheckOrgPolicyPolicyDestroyProducer(t),
+		Steps: []resource.TestStep{
+			{
+				Config: testAccOrgPolicyPolicy_EnforceParameterizedMCDryRunPolicy(context),
+			},
+			{
+				ResourceName:            "google_org_policy_policy.primary",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"name", "spec.0.rules.0.condition.0.expression"},
+			},
+		},
+	})
+}
+func testAccOrgPolicyPolicy_EnforceParameterizedMCDryRunPolicy(context map[string]interface{}) string {
+	return acctest.Nprintf(`
+resource "google_org_policy_policy" "primary" {
+  name   = "projects/${google_project.basic.name}/policies/essentialcontacts.managed.allowedContactDomains"
+  parent = "projects/${google_project.basic.name}"
+
+  dry_run_spec {
+    rules {
+      enforce = "TRUE"
+      parameters = "{\"allowedDomains\": [\"@google.com\"]}"
+    }
+  }
+}
+
+resource "google_project" "basic" {
+  project_id = "tf-test-id%{random_suffix}"
+  name       = "tf-test-id%{random_suffix}"
+  org_id     = "%{org_id}"
+  deletion_policy = "DELETE"
+}
+
+
+`, context)
 }

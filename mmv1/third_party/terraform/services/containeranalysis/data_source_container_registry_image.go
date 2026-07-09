@@ -5,13 +5,15 @@ import (
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-google/google/registry"
 	"github.com/hashicorp/terraform-provider-google/google/tpgresource"
 	transport_tpg "github.com/hashicorp/terraform-provider-google/google/transport"
 )
 
 func DataSourceGoogleContainerImage() *schema.Resource {
 	return &schema.Resource{
-		Read: containerRegistryImageRead,
+		DeprecationMessage: "Container Registry is deprecated. Effective March 18, 2025, Container Registry is shut down and writing images to Container Registry is unavailable. Resource will be removed in future major release.",
+		Read:               containerRegistryImageRead,
 		Schema: map[string]*schema.Schema{
 			"name": {
 				Type:     schema.TypeString,
@@ -76,4 +78,13 @@ func containerRegistryImageRead(d *schema.ResourceData, meta interface{}) error 
 	}
 	d.SetId(d.Get("image_url").(string))
 	return nil
+}
+
+func init() {
+	registry.Schema{
+		Name:        "google_container_registry_image",
+		ProductName: "containeranalysis",
+		Type:        registry.SchemaTypeDataSource,
+		Schema:      DataSourceGoogleContainerImage(),
+	}.Register()
 }

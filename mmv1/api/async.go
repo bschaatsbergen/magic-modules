@@ -14,40 +14,29 @@
 package api
 
 import (
+	"reflect"
 	"strings"
 
-	"github.com/GoogleCloudPlatform/magic-modules/mmv1/google"
+	"github.com/GoogleCloudPlatform/magic-modules/mmv1/api/utils"
 	"golang.org/x/exp/slices"
 	"gopkg.in/yaml.v3"
 )
 
 // Base class from which other Async classes can inherit.
 type Async struct {
-	// Embed YamlValidator object
-	// google.YamlValidator
+	// Describes an operation, one of "OpAsync", "PollAsync"
+	Type string `yaml:"type,omitempty"`
 
 	// Describes an operation
-	Operation *Operation
+	Operation *Operation `yaml:"operation,omitempty"`
 
 	// The list of methods where operations are used.
-	Actions []string
+	Actions []string `yaml:"actions,omitempty"`
 
-	// Describes an operation, one of "OpAsync", "PollAsync"
-	Type string
-
-	OpAsync `yaml:",inline"`
-
+	OpAsync   `yaml:",inline"`
 	PollAsync `yaml:",inline"`
 }
 
-// def validate
-//   super
-
-//   check :operation, type: Operation
-//   check :actions, default: %w[create delete update], type: ::Array, item_type: ::String
-// end
-
-// def allow?(method)
 func (a Async) Allow(method string) bool {
 	return slices.Contains(a.Actions, strings.ToLower(method))
 }
@@ -59,18 +48,17 @@ func (a Async) IsA(asyncType string) bool {
 // The main implementation of Operation,
 // corresponding to common GCP Operation resources.
 type Operation struct {
-	Timeouts         *Timeouts
+	Timeouts         *Timeouts `yaml:"timeouts,omitempty"`
 	OpAsyncOperation `yaml:",inline"`
 }
 
-// def initialize(path, base_url, wait_ms, timeouts)
 func NewOperation() *Operation {
-	//   super()
 	op := new(Operation)
 	op.Timeouts = NewTimeouts()
 	return op
 }
 
+// It is only used in openapi-generate
 func NewAsync() *Async {
 	oa := &Async{
 		Actions:   []string{"create", "delete", "update"},
@@ -80,133 +68,23 @@ func NewAsync() *Async {
 	return oa
 }
 
-// def validate
-//   super
-//   check :resource_inside_response, type: :boolean, default: false
-// end
-
 // Represents an asynchronous operation definition
 type OpAsync struct {
-	Result OpAsyncResult
-
-	Status OpAsyncStatus
-
-	Error OpAsyncError
+	Result OpAsyncResult `yaml:"result,omitempty"`
 
 	// If true, include project as an argument to OperationWaitTime.
 	// It is intended for resources that calculate project/region from a selflink field
-	IncludeProject bool `yaml:"include_project"`
+	IncludeProject bool `yaml:"include_project,omitempty"`
 }
-
-// def initialize(operation, result, status, error)
-//   super()
-//   @operation = operation
-//   @result = result
-//   @status = status
-//   @error = error
-// end
-
-// def validate
-//   super
-
-//   check :operation, type: Operation, required: true
-//   check :result, type: Result, default: Result.new
-//   check :status, type: Status
-//   check :error, type: Error
-//   check :actions, default: %w[create delete update], type: ::Array, item_type: ::String
-//   check :include_project, type: :boolean, default: false
-// end
 
 type OpAsyncOperation struct {
-	Kind string
-
-	Path string
-
-	BaseUrl string `yaml:"base_url"`
-
-	WaitMs int `yaml:"wait_ms"`
-
-	// Use this if the resource includes the full operation url.
-	FullUrl string `yaml:"full_url"`
+	BaseUrl string `yaml:"base_url,omitempty"`
 }
-
-// def validate
-//   super
-
-//   check :kind, type: String
-//   check :path, type: String
-//   check :base_url, type: String
-//   check :wait_ms, type: Integer
-
-//   check :full_url, type: String
-
-//   conflicts %i[base_url full_url]
-// end
 
 // Represents the results of an Operation request
 type OpAsyncResult struct {
-	ResourceInsideResponse bool `yaml:"resource_inside_response"`
-
-	Path string
+	ResourceInsideResponse bool `yaml:"resource_inside_response,omitempty"`
 }
-
-// def initialize(path = nil, resource_inside_response = nil)
-//   super()
-//   @path = path
-//   @resource_inside_response = resource_inside_response
-// end
-
-// def validate
-//   super
-
-//   check :path, type: String
-// end
-
-// Provides information to parse the result response to check operation
-// status
-type OpAsyncStatus struct {
-	// google.YamlValidator
-
-	Path string
-
-	Complete bool
-
-	Allowed []bool
-}
-
-// def initialize(path, complete, allowed)
-//   super()
-//   @path = path
-//   @complete = complete
-//   @allowed = allowed
-// end
-
-// def validate
-//   super
-//   check :path, type: String
-//   check :allowed, type: Array, item_type: [::String, :boolean]
-// end
-
-// Provides information on how to retrieve errors of the executed operations
-type OpAsyncError struct {
-	google.YamlValidator
-
-	Path string
-
-	Message string
-}
-
-// def initialize(path, message)
-//   super()
-//   @path = path
-//   @message = message
-// end
-
-// def validate
-//   super
-//   check :path, type: String
-//   check :message, type: String
-// end
 
 // Async implementation for polling in Terraform
 type PollAsync struct {
@@ -214,32 +92,38 @@ type PollAsync struct {
 
 	// Function to call for checking the Poll response for
 	// creating and updating a resource
-	CheckResponseFuncExistence string `yaml:"check_response_func_existence"`
+	CheckResponseFuncExistence string `yaml:"check_response_func_existence,omitempty"`
 
 	// Function to call for checking the Poll response for
 	// deleting a resource
-	CheckResponseFuncAbsence string `yaml:"check_response_func_absence"`
-
-	// Custom code to get a poll response, if needed.
-	// Will default to same logic as Read() to get current resource
-	CustomPollRead string `yaml:"custom_poll_read"`
+	CheckResponseFuncAbsence string `yaml:"check_response_func_absence,omitempty"`
 
 	// If true, will suppress errors from polling and default to the
 	// result of the final Read()
-	SuppressError bool `yaml:"suppress_error"`
+	SuppressError bool `yaml:"suppress_error,omitempty"`
 
 	// Number of times the desired state has to occur continuously
 	// during polling before returning a success
-	TargetOccurrences int `yaml:"target_occurrences"`
+	TargetOccurrences int `yaml:"target_occurrences,omitempty"`
 }
 
-func (a *Async) UnmarshalYAML(n *yaml.Node) error {
-	a.Actions = []string{"create", "delete", "update"}
+// newAsyncWithDefaults returns an Async object with default values set.
+func newAsyncWithDefaults() Async {
+	a := Async{
+		Actions: []string{"create", "delete", "update"},
+		Type:    "OpAsync",
+	}
+	return a
+}
+
+func (a *Async) UnmarshalYAML(value *yaml.Node) error {
+	// Start with a struct containing all the default values.
+	*a = newAsyncWithDefaults()
+
 	type asyncAlias Async
 	aliasObj := (*asyncAlias)(a)
 
-	err := n.Decode(&aliasObj)
-	if err != nil {
+	if err := value.Decode(aliasObj); err != nil {
 		return err
 	}
 
@@ -250,16 +134,26 @@ func (a *Async) UnmarshalYAML(n *yaml.Node) error {
 	return nil
 }
 
-// 	return nil
-// }
+// MarshalYAML implements a custom marshaller for the Async struct.
+// It omits fields that are set to their default values.
+func (a *Async) MarshalYAML() (interface{}, error) {
+	// Use a type alias to prevent infinite recursion during marshaling.
+	type asyncAlias Async
 
-//   def validate
-// 	super
+	// Create a defaults object that reflects the defaults for the current object's state.
+	defaults := newAsyncWithDefaults()
 
-// 	check :check_response_func_existence, type: String, required: true
-// 	check :check_response_func_absence, type: String,
-// 										default: 'transport_tpg.PollCheckForAbsence'
-// 	check :custom_poll_read, type: String
-// 	check :suppress_error, type: :boolean, default: false
-// 	check :target_occurrences, type: Integer, default: 1
-//   end
+	// Use the generic helper for simple types. It returns a pointer to a clone.
+	clone, err := utils.OmitDefaultsForMarshaling(*a, defaults)
+	if err != nil {
+		return nil, err
+	}
+	clonePtr := clone.(*Async)
+
+	// The helper ignores slices, so we handle `Actions` manually on the clone.
+	if reflect.DeepEqual(clonePtr.Actions, defaults.Actions) {
+		clonePtr.Actions = nil
+	}
+
+	return (*asyncAlias)(clonePtr), nil
+}

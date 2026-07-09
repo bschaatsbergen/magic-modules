@@ -7,7 +7,7 @@ description: |-
 # IAM policy for Google Cloud Healthcare FHIR store
 
 ~> **Warning:** These resources are in beta, and should be used with the terraform-provider-google-beta provider.
-See [Provider Versions](https://terraform.io/docs/providers/google/guides/provider_versions.html) for more details on beta resources.
+See [Provider Versions](../guides/provider_versions.html.markdown) for more details on beta resources.
 
 Three different resources help you manage your IAM policy for Healthcare FHIR store. Each of these resources serves a different use case:
 
@@ -95,7 +95,7 @@ exported:
 
 ## Import
 
--> **Custom Roles**: If you're importing a IAM resource with a custom role, make sure to use the
+-> **Custom Roles** If you're importing a IAM resource with a custom role, make sure to use the
  full name of the custom role, e.g. `[projects/my-project|organizations/my-org]/roles/my-custom-role`.
 
 ### Importing IAM members

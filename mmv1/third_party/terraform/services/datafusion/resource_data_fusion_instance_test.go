@@ -6,6 +6,9 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-provider-google/google/acctest"
+	"github.com/hashicorp/terraform-provider-google/google/envvar"
+	_ "github.com/hashicorp/terraform-provider-google/google/services/datafusion"
+	"github.com/hashicorp/terraform-provider-google/google/services/tags"
 )
 
 func TestAccDataFusionInstance_update(t *testing.T) {
@@ -46,7 +49,7 @@ resource "google_data_fusion_instance" "foobar" {
   region = "us-central1"
   type   = "BASIC"
   # See supported versions here https://cloud.google.com/data-fusion/docs/support/version-support-policy
-  version = "6.9.1"
+  version = "6.10.0"
   # Mark for testing to avoid service networking connection usage that is not cleaned up
   options = {
   	prober_test_run = "true"
@@ -54,6 +57,17 @@ resource "google_data_fusion_instance" "foobar" {
   accelerators {
     accelerator_type = "CDC"
     state = "DISABLED"
+  }
+  maintenance_policy {
+    maintenance_window {
+      recurring_time_window {
+        window {
+          start_time = "2027-01-01T00:00:00Z"
+          end_time   = "2027-01-01T04:00:00Z"
+        }
+        recurrence = "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR"
+      }
+    }
   }
 }
 `, instanceName)
@@ -72,11 +86,22 @@ resource "google_data_fusion_instance" "foobar" {
     label1 = "value1"
     label2 = "value2"
   }
-  version = "6.9.2"
+  version = "6.10.1"
 
   accelerators {
     accelerator_type = "CCAI_INSIGHTS"
     state = "ENABLED"
+  }
+  maintenance_policy {
+    maintenance_window {
+      recurring_time_window {
+        window {
+          start_time = "2027-01-01T01:00:00Z"
+          end_time   = "2027-01-01T05:00:00Z"
+        }
+        recurrence = "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR"
+      }
+    }
   }
   # Mark for testing to avoid service networking connection usage that is not cleaned up
   options = {
@@ -145,6 +170,19 @@ resource "google_data_fusion_instance" "foobar" {
     label1 = "value1"
     label2 = "value2"
   }
+
+  maintenance_policy {
+    maintenance_window {
+      recurring_time_window {
+        window {
+          start_time = "2027-01-01T00:00:00Z"
+          end_time   = "2027-01-01T04:00:00Z"
+        }
+        recurrence = "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR"
+      }
+    }
+  }
+
   # Mark for testing to avoid service networking connection usage that is not cleaned up
   options = {
   	prober_test_run = "true"
@@ -153,17 +191,15 @@ resource "google_data_fusion_instance" "foobar" {
 `, instanceName)
 }
 
-func TestAccDataFusionInstanceVersion_dataFusionInstanceUpdate(t *testing.T) {
+func TestAccDatafusionInstance_tags(t *testing.T) {
 	t.Parallel()
 
+	tagKey := tags.BootstrapSharedTestOrganizationTagKey(t, "datafusion-instances-tagkey", nil)
 	context := map[string]interface{}{
+		"org":           envvar.GetTestOrgFromEnv(t),
+		"tagKey":        tagKey,
+		"tagValue":      tags.BootstrapSharedTestOrganizationTagValue(t, "datafusion-instances-tagvalue", tagKey),
 		"random_suffix": acctest.RandString(t, 10),
-		"version":       "6.9.1",
-	}
-
-	contextUpdate := map[string]interface{}{
-		"random_suffix": acctest.RandString(t, 10),
-		"version":       "6.9.2",
 	}
 
 	acctest.VcrTest(t, resource.TestCase{
@@ -172,38 +208,27 @@ func TestAccDataFusionInstanceVersion_dataFusionInstanceUpdate(t *testing.T) {
 		CheckDestroy:             testAccCheckDataFusionInstanceDestroyProducer(t),
 		Steps: []resource.TestStep{
 			{
-				Config: testAccDataFusionInstanceVersion_dataFusionInstanceUpdate(context),
+				Config: testAccDatafusionInstanceTags(context),
 			},
 			{
-				ResourceName:            "google_data_fusion_instance.basic_instance",
+				ResourceName:            "google_data_fusion_instance.instance",
 				ImportState:             true,
 				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"region"},
-			},
-			{
-				Config: testAccDataFusionInstanceVersion_dataFusionInstanceUpdate(contextUpdate),
-			},
-			{
-				ResourceName:            "google_data_fusion_instance.basic_instance",
-				ImportState:             true,
-				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"region"},
+				ImportStateVerifyIgnore: []string{"region", "labels", "terraform_labels", "tags"},
 			},
 		},
 	})
 }
 
-func testAccDataFusionInstanceVersion_dataFusionInstanceUpdate(context map[string]interface{}) string {
+func testAccDatafusionInstanceTags(context map[string]interface{}) string {
 	return acctest.Nprintf(`
-resource "google_data_fusion_instance" "basic_instance" {
-  name   = "tf-test-my-instance%{random_suffix}"
+resource "google_data_fusion_instance" "instance" {
+  name   = "tf-test-my-instance-%{random_suffix}"
   region = "us-central1"
   type   = "BASIC"
-  # Mark for testing to avoid service networking connection usage that is not cleaned up
-  options = {
-    prober_test_run = "true"
+  tags = {
+	"%{org}/%{tagKey}" = "%{tagValue}"
   }
-  version = "%{version}"
 }
 `, context)
 }

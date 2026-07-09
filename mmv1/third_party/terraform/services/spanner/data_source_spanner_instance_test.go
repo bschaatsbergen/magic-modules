@@ -5,11 +5,10 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-provider-google/google/acctest"
+	_ "github.com/hashicorp/terraform-provider-google/google/services/spanner"
 )
 
 func TestAccDataSourceSpannerInstance_basic(t *testing.T) {
-	// Randomness from spanner instance
-	acctest.SkipIfVcr(t)
 	t.Parallel()
 
 	context := map[string]interface{}{
@@ -34,16 +33,18 @@ func TestAccDataSourceSpannerInstance_basic(t *testing.T) {
 func testAccDataSourceSpannerInstanceBasic(context map[string]interface{}) string {
 	return acctest.Nprintf(`
 resource "google_spanner_instance" "bar" {
-	config       = "regional-us-central1"
-	display_name = "Test Spanner Instance"
-	num_nodes    = 2
-	labels = {
-		"foo" = "bar"
-	}
+  name         = "tf-test-%{random_suffix}"
+  display_name = "Test Spanner Instance"
+  config       = "regional-us-central1"
+
+  processing_units = 100
+  labels = {
+    "foo" = "bar"
+  }
 }
 
 data "google_spanner_instance" "foo" {
-	name = google_spanner_instance.bar.name
+  name = google_spanner_instance.bar.name
 }
 `, context)
 }

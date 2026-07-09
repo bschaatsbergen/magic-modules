@@ -10,10 +10,12 @@ import (
 	"time"
 
 	"cloud.google.com/go/bigtable"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 
+	"github.com/hashicorp/terraform-provider-google/google/registry"
 	"github.com/hashicorp/terraform-provider-google/google/tpgresource"
 	transport_tpg "github.com/hashicorp/terraform-provider-google/google/transport"
 	"github.com/hashicorp/terraform-provider-google/google/verify"
@@ -94,12 +96,14 @@ func resourceBigtableGCPolicyCustomizeDiff(_ context.Context, d *schema.Resource
 
 func ResourceBigtableGCPolicy() *schema.Resource {
 	return &schema.Resource{
-		Create:        resourceBigtableGCPolicyUpsert,
-		Read:          resourceBigtableGCPolicyRead,
-		Delete:        resourceBigtableGCPolicyDestroy,
-		Update:        resourceBigtableGCPolicyUpsert,
-		CustomizeDiff: resourceBigtableGCPolicyCustomizeDiff,
-
+		Create: resourceBigtableGCPolicyUpsert,
+		Read:   resourceBigtableGCPolicyRead,
+		Delete: resourceBigtableGCPolicyDestroy,
+		Update: resourceBigtableGCPolicyUpsert,
+		CustomizeDiff: customdiff.All(
+			tpgresource.DefaultProviderDeletionPolicy("DELETE"),
+			resourceBigtableGCPolicyCustomizeDiff,
+		),
 		Timeouts: &schema.ResourceTimeout{
 			Create: schema.DefaultTimeout(20 * time.Minute),
 			Delete: schema.DefaultTimeout(20 * time.Minute),
@@ -208,14 +212,9 @@ func ResourceBigtableGCPolicy() *schema.Resource {
 				Description: `The ID of the project in which the resource belongs. If it is not provided, the provider project is used.`,
 			},
 
-			"deletion_policy": {
-				Type:     schema.TypeString,
-				Optional: true,
-				Description: `The deletion policy for the GC policy. Setting ABANDON allows the resource
-				to be abandoned rather than deleted. This is useful for GC policy as it cannot be deleted
-				in a replicated instance. Possible values are: "ABANDON".`,
-				ValidateFunc: validation.StringInSlice([]string{"ABANDON", ""}, false),
-			},
+			//UDP schema start
+			"deletion_policy": tpgresource.DeletionPolicySchemaEntry("DELETE"),
+			//UDP schema end
 
 			"ignore_warnings": {
 				Type:     schema.TypeBool,
@@ -232,6 +231,11 @@ func ResourceBigtableGCPolicy() *schema.Resource {
 }
 
 func resourceBigtableGCPolicyUpsert(d *schema.ResourceData, meta interface{}) error {
+
+	if tpgresource.DeletionPolicyPreUpdate(d, ResourceBigtableGCPolicy) {
+		return ResourceBigtableGCPolicy().Read(d, meta)
+	}
+
 	config := meta.(*transport_tpg.Config)
 	userAgent, err := tpgresource.GenerateUserAgentString(d, config.UserAgent)
 	if err != nil {
@@ -246,7 +250,7 @@ func resourceBigtableGCPolicyUpsert(d *schema.ResourceData, meta interface{}) er
 	}
 
 	instanceName := tpgresource.GetResourceNameFromSelfLink(d.Get("instance_name").(string))
-	c, err := config.BigTableClientFactory(userAgent).NewAdminClient(project, instanceName)
+	c, err := NewClientFactory(config, userAgent).NewAdminClient(project, instanceName)
 	if err != nil {
 		return fmt.Errorf("Error starting admin client. %s", err)
 	}
@@ -317,7 +321,7 @@ func resourceBigtableGCPolicyRead(d *schema.ResourceData, meta interface{}) erro
 	}
 
 	instanceName := tpgresource.GetResourceNameFromSelfLink(d.Get("instance_name").(string))
-	c, err := config.BigTableClientFactory(userAgent).NewAdminClient(project, instanceName)
+	c, err := NewClientFactory(config, userAgent).NewAdminClient(project, instanceName)
 	if err != nil {
 		return fmt.Errorf("Error starting admin client. %s", err)
 	}
@@ -369,6 +373,10 @@ func resourceBigtableGCPolicyRead(d *schema.ResourceData, meta interface{}) erro
 		return fmt.Errorf("Error setting project: %s", err)
 	}
 
+	if err := tpgresource.DeletionPolicyReadDefault(d, config, "DELETE"); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -402,7 +410,6 @@ func GcPolicyToGCRuleString(gc bigtable.GCPolicy, topLevel bool) (map[string]int
 		} else {
 			result["max_version"] = version
 		}
-		break
 	case bigtable.PolicyUnion:
 		result["mode"] = "union"
 		rules := []interface{}{}
@@ -414,7 +421,6 @@ func GcPolicyToGCRuleString(gc bigtable.GCPolicy, topLevel bool) (map[string]int
 			rules = append(rules, gcRuleString)
 		}
 		result["rules"] = rules
-		break
 	case bigtable.PolicyIntersection:
 		result["mode"] = "intersection"
 		rules := []interface{}{}
@@ -438,14 +444,14 @@ func GcPolicyToGCRuleString(gc bigtable.GCPolicy, topLevel bool) (map[string]int
 }
 
 func resourceBigtableGCPolicyDestroy(d *schema.ResourceData, meta interface{}) error {
-	config := meta.(*transport_tpg.Config)
 
-	if deletionPolicy := d.Get("deletion_policy"); deletionPolicy == "ABANDON" {
-		// Allows for the GC policy to be abandoned without deletion to avoid possible
-		// deletion failure in a replicated instance.
-		log.Printf("[WARN] The GC policy is abandoned")
+	if ok, err := tpgresource.DeletionPolicyPreDelete(d); err != nil {
+		return err
+	} else if ok {
 		return nil
 	}
+
+	config := meta.(*transport_tpg.Config)
 
 	userAgent, err := tpgresource.GenerateUserAgentString(d, config.UserAgent)
 	if err != nil {
@@ -459,7 +465,7 @@ func resourceBigtableGCPolicyDestroy(d *schema.ResourceData, meta interface{}) e
 	}
 
 	instanceName := tpgresource.GetResourceNameFromSelfLink(d.Get("instance_name").(string))
-	c, err := config.BigTableClientFactory(userAgent).NewAdminClient(project, instanceName)
+	c, err := NewClientFactory(config, userAgent).NewAdminClient(project, instanceName)
 	if err != nil {
 		return fmt.Errorf("Error starting admin client. %s", err)
 	}
@@ -641,4 +647,13 @@ func getMaxAgeDuration(values map[string]interface{}) (time.Duration, error) {
 	days := values["days"].(int)
 
 	return time.Hour * 24 * time.Duration(days), nil
+}
+
+func init() {
+	registry.Schema{
+		Name:        "google_bigtable_gc_policy",
+		ProductName: "bigtable",
+		Type:        registry.SchemaTypeResource,
+		Schema:      ResourceBigtableGCPolicy(),
+	}.Register()
 }

@@ -12,10 +12,13 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	"github.com/hashicorp/terraform-plugin-testing/tfversion"
 	"github.com/hashicorp/terraform-provider-google/google/acctest"
 	"github.com/hashicorp/terraform-provider-google/google/envvar"
+	"github.com/hashicorp/terraform-provider-google/google/services/cloudbilling"
 	"github.com/hashicorp/terraform-provider-google/google/services/resourcemanager"
-	transport_tpg "github.com/hashicorp/terraform-provider-google/google/transport"
+	rmClient "github.com/hashicorp/terraform-provider-google/google/services/resourcemanager/client"
+	"github.com/hashicorp/terraform-provider-google/google/services/tags"
 )
 
 var (
@@ -26,7 +29,7 @@ var (
 func TestAccProject_createWithoutOrg(t *testing.T) {
 	t.Parallel()
 
-	creds := transport_tpg.MultiEnvSearch(envvar.CredsEnvVars)
+	creds := envvar.MultiEnvSearch(envvar.CredsEnvVars)
 	if strings.Contains(creds, "iam.gserviceaccount.com") {
 		t.Skip("Service accounts cannot create projects without a parent. Requires user credentials.")
 	}
@@ -42,6 +45,44 @@ func TestAccProject_createWithoutOrg(t *testing.T) {
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckGoogleProjectExists("google_project.acceptance", pid),
 				),
+			},
+		},
+	})
+}
+
+// Test that a Project resource can be imported using an identity block (Terraform 1.12+).
+func TestAccProject_importBlockWithResourceIdentity(t *testing.T) {
+	t.Parallel()
+	t.Skip("terraform_labels cannot be ignored during a resource identity import test")
+
+	org := envvar.GetTestOrgFromEnv(t)
+	pid := fmt.Sprintf("%s-%d", TestPrefix, acctest.RandInt(t))
+	acctest.VcrTest(t, resource.TestCase{
+		TerraformVersionChecks: []tfversion.TerraformVersionCheck{
+			tfversion.SkipBelow(tfversion.Version1_12_0),
+		},
+		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
+		Steps: []resource.TestStep{
+			{
+				Config: testAccProject(pid, org),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckGoogleProjectExists("google_project.acceptance", pid),
+				),
+			},
+			{
+				// The import step config must use deletion_policy = "PREVENT" because
+				// DeletionPolicyReadDefault sets that value during import (it is a
+				// client-side field not stored in the GCP API). Using a mismatching
+				// value would cause a non-empty plan and fail the no-op import check.
+				ResourceName:    "google_project.acceptance",
+				ImportState:     true,
+				ImportStateKind: resource.ImportBlockWithResourceIdentity,
+				Config:          testAccProject_noAllowDestroy(pid, org),
+			},
+			{
+				// Reset deletion_policy to "DELETE" so the project can be cleaned up.
+				Config: testAccProject(pid, org),
 			},
 		},
 	})
@@ -127,7 +168,7 @@ func TestAccProject_labels(t *testing.T) {
 		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
 		Steps: []resource.TestStep{
 			{
-				Config: testAccProject_labels(pid, org, map[string]string{"test": "that"}),
+				Config: testAccProject_labels(pid, org, "test", "that"),
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckGoogleProjectHasLabels(t, "google_project.acceptance", pid, map[string]string{"test": "that"}),
 				),
@@ -141,7 +182,7 @@ func TestAccProject_labels(t *testing.T) {
 			},
 			// update project with labels
 			{
-				Config: testAccProject_labels(pid, org, map[string]string{"label": "label-value"}),
+				Config: testAccProject_labels(pid, org, "label", "label-value"),
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckGoogleProjectExists("google_project.acceptance", pid),
 					testAccCheckGoogleProjectHasLabels(t, "google_project.acceptance", pid, map[string]string{"label": "label-value"}),
@@ -153,6 +194,12 @@ func TestAccProject_labels(t *testing.T) {
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckGoogleProjectExists("google_project.acceptance", pid),
 					testAccCheckGoogleProjectHasNoLabels(t, "google_project.acceptance", pid),
+				),
+			},
+			{
+				Config: testAccProject_labels(pid, org, "label", "label-value"),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckGoogleProjectHasLabels(t, "google_project.acceptance", pid, map[string]string{"label": "label-value"}),
 				),
 			},
 		},
@@ -234,6 +281,51 @@ func TestAccProject_migrateParent(t *testing.T) {
 	})
 }
 
+// Test that a Project resource can be created with tags
+func TestAccProject_tags(t *testing.T) {
+	t.Parallel()
+
+	pid := fmt.Sprintf("%s-%d", TestPrefix, acctest.RandInt(t))
+	tagKey := tags.BootstrapSharedTestOrganizationTagKey(t, "crm-projects-tagkey", nil)
+	context := map[string]interface{}{
+		"pid":           pid,
+		"org":           envvar.GetTestOrgFromEnv(t),
+		"tagKey":        tagKey,
+		"tagValue":      tags.BootstrapSharedTestOrganizationTagValue(t, "crm-projects-tagvalue", tagKey),
+		"random_suffix": acctest.RandString(t, 10),
+	}
+	acctest.VcrTest(t, resource.TestCase{
+		PreCheck: func() { acctest.AccTestPreCheck(t) },
+		ExternalProviders: map[string]resource.ExternalProvider{
+			"time": {},
+		},
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
+		Steps: []resource.TestStep{
+			{
+				Config: testAccProject_tags(context),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckGoogleProjectExists("google_project.acceptance", pid),
+				),
+			},
+			// Make sure import supports tags
+			{
+				ResourceName:            "google_project.acceptance",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"tags", "deletion_policy"}, // we don't read tags back
+			},
+			// Update tags tries to replace project but fails due to deletion policy
+			{
+				Config:      testAccProject_withoutTags(context),
+				ExpectError: regexp.MustCompile("deletion_policy"),
+			},
+			{
+				Config: testAccProject_tagsAllowDestroy(context),
+			},
+		},
+	})
+}
+
 func testAccCheckGoogleProjectExists(r, pid string) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
 		rs, ok := s.RootModule().Resources[r]
@@ -269,7 +361,7 @@ func testAccCheckGoogleProjectHasBillingAccount(t *testing.T, r, pid, billingId 
 		// Actual value in API should match state and expected
 		// Read the billing account
 		config := acctest.GoogleProviderConfig(t)
-		ba, err := config.NewBillingClient(config.UserAgent).Projects.GetBillingInfo(resourcemanager.PrefixedProject(pid)).Do()
+		ba, err := cloudbilling.NewClient(config, config.UserAgent).Projects.GetBillingInfo(resourcemanager.PrefixedProject(pid)).Do()
 		if err != nil {
 			return fmt.Errorf("Error reading billing account for project %q: %v", resourcemanager.PrefixedProject(pid), err)
 		}
@@ -295,7 +387,7 @@ func testAccCheckGoogleProjectHasLabels(t *testing.T, r, pid string, expected ma
 		// Actual value in API should match state and expected
 		config := acctest.GoogleProviderConfig(t)
 
-		found, err := config.NewResourceManagerClient(config.UserAgent).Projects.Get(pid).Do()
+		found, err := rmClient.NewClient(config, config.UserAgent).Projects.Get(pid).Do()
 		if err != nil {
 			return err
 		}
@@ -337,7 +429,7 @@ func testAccCheckGoogleProjectHasNoLabels(t *testing.T, r, pid string) resource.
 		// Actual value in API should match state and expected
 		config := acctest.GoogleProviderConfig(t)
 
-		found, err := config.NewResourceManagerClient(config.UserAgent).Projects.Get(pid).Do()
+		found, err := rmClient.NewClient(config, config.UserAgent).Projects.Get(pid).Do()
 		if err != nil {
 			return err
 		}
@@ -403,8 +495,7 @@ func TestAccProject_abandon(t *testing.T) {
 				Config:  testAccProject_abandon(pid, org),
 				Destroy: true,
 				Check: resource.ComposeTestCheckFunc(
-					testAccCheckGoogleProjectExists("google_project.acceptance", pid),
-				),
+					testAccCheckGoogleProjectExists("google_project.acceptance", pid)),
 			},
 		},
 	})
@@ -465,8 +556,8 @@ resource "google_project" "acceptance" {
 `, pid, pid, org, billing)
 }
 
-func testAccProject_labels(pid, org string, labels map[string]string) string {
-	r := fmt.Sprintf(`
+func testAccProject_labels(pid, org, key, value string) string {
+	return fmt.Sprintf(`
 provider "google" {
   add_terraform_attribution_label = false
 }
@@ -476,15 +567,11 @@ resource "google_project" "acceptance" {
   name       = "%s"
   org_id     = "%s"
   deletion_policy = "DELETE"
-  labels = {`, pid, pid, org)
-
-	l := ""
-	for key, value := range labels {
-		l += fmt.Sprintf("%q = %q\n", key, value)
-	}
-
-	l += fmt.Sprintf("}\n}")
-	return r + l
+  labels = {
+    "%s" = "%s"
+  }
+}
+`, pid, pid, org, key, value)
 }
 
 func testAccProject_deleteDefaultNetwork(pid, org, billing string) string {
@@ -552,4 +639,41 @@ resource "google_folder" "folder1" {
   deletion_protection = false
 }
 `, pid, pid, org, folderName, org)
+}
+
+func testAccProject_tags(context map[string]interface{}) string {
+	return acctest.Nprintf(`
+resource "google_project" "acceptance" {
+  project_id = "%{pid}"
+  name       = "%{pid}"
+  org_id     = "%{org}"
+  tags = {
+	"%{org}/%{tagKey}" = "%{tagValue}"
+  }
+}
+`, context)
+}
+
+func testAccProject_withoutTags(context map[string]interface{}) string {
+	return acctest.Nprintf(`
+resource "google_project" "acceptance" {
+  project_id = "%{pid}"
+  name       = "%{pid}"
+  org_id     = "%{org}"
+}
+`, context)
+}
+
+func testAccProject_tagsAllowDestroy(context map[string]interface{}) string {
+	return acctest.Nprintf(`
+resource "google_project" "acceptance" {
+  project_id      = "%{pid}"
+  name            = "%{pid}"
+  org_id          = "%{org}"
+  deletion_policy = "DELETE"
+  tags            = {
+	"%{org}/%{tagKey}" = "%{tagValue}"
+  }
+}
+`, context)
 }

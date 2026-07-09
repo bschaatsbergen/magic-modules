@@ -1,0 +1,16 @@
+{{ if ne $.TargetVersionName "ga" -}}
+resource: 'google_runtimeconfig_variable'
+generation_type: 'handwritten'
+api_service_name: 'runtimeconfig.googleapis.com'
+api_version: 'v1beta1'
+api_resource_type_kind: 'Variable'
+fields:
+  - api_field: 'name'
+  - field: 'parent'
+  - field: 'project'
+  - api_field: 'text'
+  - api_field: 'updateTime'
+  - api_field: 'value'
+  - field: 'deletion_policy'
+    provider_only: true
+{{ end }}

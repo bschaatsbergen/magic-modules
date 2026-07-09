@@ -12,6 +12,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"google.golang.org/api/iterator"
 
+	"github.com/hashicorp/terraform-provider-google/google/registry"
 	"github.com/hashicorp/terraform-provider-google/google/tpgresource"
 	transport_tpg "github.com/hashicorp/terraform-provider-google/google/transport"
 
@@ -53,6 +54,7 @@ func ResourceBigtableInstance() *schema.Resource {
 		},
 
 		CustomizeDiff: customdiff.All(
+			tpgresource.DefaultProviderDeletionPolicy("DELETE"),
 			tpgresource.DefaultProviderProject,
 			resourceBigtableInstanceClusterReorderTypeList,
 			resourceBigtableInstanceUniqueClusterID,
@@ -152,6 +154,13 @@ func ResourceBigtableInstance() *schema.Resource {
 							Computed:    true,
 							Description: `The state of the cluster`,
 						},
+						"node_scaling_factor": {
+							Type:         schema.TypeString,
+							Optional:     true,
+							Default:      "NodeScalingFactor1X",
+							ValidateFunc: validation.StringInSlice([]string{"NodeScalingFactor1X", "NodeScalingFactor2X"}, false),
+							Description:  `The node scaling factor of this cluster. One of "NodeScalingFactor1X" or "NodeScalingFactor2X". Defaults to "NodeScalingFactor1X".`,
+						},
 					},
 				},
 			},
@@ -182,7 +191,7 @@ func ResourceBigtableInstance() *schema.Resource {
 				Type:        schema.TypeBool,
 				Optional:    true,
 				Default:     true,
-				Description: `      When the field is set to true or unset in Terraform state, a terraform apply or terraform destroy that would delete the instance will fail. When the field is set to false, deleting the instance is allowed.`,
+				Description: `When the field is set to true or unset in Terraform state, a terraform apply or terraform destroy that would delete the instance will fail. When the field is set to false, deleting the instance is allowed.`,
 			},
 
 			"labels": {
@@ -215,6 +224,23 @@ func ResourceBigtableInstance() *schema.Resource {
 				Computed:    true,
 				ForceNew:    true,
 				Description: `The ID of the project in which the resource belongs. If it is not provided, the provider project is used.`,
+			},
+			//UDP schema start
+			"deletion_policy": tpgresource.DeletionPolicySchemaEntry("DELETE"),
+			//UDP schema end
+			"tags": {
+				Type:        schema.TypeMap,
+				Optional:    true,
+				ForceNew:    true,
+				Elem:        &schema.Schema{Type: schema.TypeString},
+				Description: `A map of Resource Manager Tags. Keys can be either the numeric tag key ID (tagKeys/123) or the namespaced name (project/tag-key). Values can be the numeric tag value ID (tagValues/456) or the namespaced value (project/tag-key/tag-value). The field is ignored when empty.`,
+			},
+			"edition": {
+				Type:         schema.TypeString,
+				Optional:     true,
+				Default:      "ENTERPRISE",
+				ValidateFunc: validation.StringInSlice([]string{"ENTERPRISE", "ENTERPRISE_PLUS"}, false),
+				Description:  `The edition of the instance. One of "ENTERPRISE" or "ENTERPRISE_PLUS". Defaults to "ENTERPRISE".`,
 			},
 		},
 		UseJSONNumber: true,
@@ -249,6 +275,10 @@ func resourceBigtableInstanceCreate(d *schema.ResourceData, meta interface{}) er
 		conf.Labels = tpgresource.ExpandEffectiveLabels(d)
 	}
 
+	if _, ok := d.GetOk("tags"); ok {
+		conf.Tags = tpgresource.ExpandStringMap(d, "tags")
+	}
+
 	switch d.Get("instance_type").(string) {
 	case "DEVELOPMENT":
 		conf.InstanceType = bigtable.DEVELOPMENT
@@ -256,12 +286,21 @@ func resourceBigtableInstanceCreate(d *schema.ResourceData, meta interface{}) er
 		conf.InstanceType = bigtable.PRODUCTION
 	}
 
+	if v, ok := d.GetOk("edition"); ok {
+		switch v.(string) {
+		case "ENTERPRISE":
+			conf.Edition = bigtable.Enterprise
+		case "ENTERPRISE_PLUS":
+			conf.Edition = bigtable.EnterprisePlus
+		}
+	}
+
 	conf.Clusters, err = expandBigtableClusters(d.Get("cluster").([]interface{}), conf.InstanceID, config)
 	if err != nil {
 		return err
 	}
 
-	c, err := config.BigTableClientFactory(userAgent).NewInstanceAdminClient(project)
+	c, err := NewClientFactory(config, userAgent).NewInstanceAdminClient(project)
 	if err != nil {
 		return fmt.Errorf("Error starting instance admin client. %s", err)
 	}
@@ -296,7 +335,7 @@ func resourceBigtableInstanceRead(d *schema.ResourceData, meta interface{}) erro
 		return err
 	}
 
-	c, err := config.BigTableClientFactory(userAgent).NewInstanceAdminClient(project)
+	c, err := NewClientFactory(config, userAgent).NewInstanceAdminClient(project)
 	if err != nil {
 		return fmt.Errorf("Error starting instance admin client. %s", err)
 	}
@@ -366,6 +405,19 @@ func resourceBigtableInstanceRead(d *schema.ResourceData, meta interface{}) erro
 	// Don't set instance_type: we don't want to detect drift on it because it can
 	// change under-the-hood.
 
+	var edition string
+	switch instance.Edition {
+	case bigtable.Enterprise:
+		edition = "ENTERPRISE"
+	case bigtable.EnterprisePlus:
+		edition = "ENTERPRISE_PLUS"
+	default:
+		edition = "ENTERPRISE"
+	}
+	if err := d.Set("edition", edition); err != nil {
+		return fmt.Errorf("Error setting edition: %s", err)
+	}
+
 	// Explicitly set virtual fields to default values if unset
 	if _, ok := d.GetOkExists("force_destroy"); !ok {
 		if err := d.Set("force_destroy", false); err != nil {
@@ -373,10 +425,19 @@ func resourceBigtableInstanceRead(d *schema.ResourceData, meta interface{}) erro
 		}
 	}
 
+	if err := tpgresource.DeletionPolicyReadDefault(d, config, "DELETE"); err != nil {
+		return err
+	}
+
 	return nil
 }
 
 func resourceBigtableInstanceUpdate(d *schema.ResourceData, meta interface{}) error {
+
+	if tpgresource.DeletionPolicyPreUpdate(d, ResourceBigtableInstance) {
+		return ResourceBigtableInstance().Read(d, meta)
+	}
+
 	config := meta.(*transport_tpg.Config)
 	userAgent, err := tpgresource.GenerateUserAgentString(d, config.UserAgent)
 	if err != nil {
@@ -389,7 +450,7 @@ func resourceBigtableInstanceUpdate(d *schema.ResourceData, meta interface{}) er
 		return err
 	}
 
-	c, err := config.BigTableClientFactory(userAgent).NewInstanceAdminClient(project)
+	c, err := NewClientFactory(config, userAgent).NewInstanceAdminClient(project)
 	if err != nil {
 		return fmt.Errorf("Error starting instance admin client. %s", err)
 	}
@@ -414,6 +475,15 @@ func resourceBigtableInstanceUpdate(d *schema.ResourceData, meta interface{}) er
 		conf.InstanceType = bigtable.DEVELOPMENT
 	case "PRODUCTION":
 		conf.InstanceType = bigtable.PRODUCTION
+	}
+
+	if d.HasChange("edition") {
+		switch d.Get("edition").(string) {
+		case "ENTERPRISE":
+			conf.Edition = bigtable.Enterprise
+		case "ENTERPRISE_PLUS":
+			conf.Edition = bigtable.EnterprisePlus
+		}
 	}
 
 	conf.Clusters, err = expandBigtableClusters(d.Get("cluster").([]interface{}), conf.InstanceID, config)
@@ -444,6 +514,13 @@ func resourceBigtableInstanceUpdate(d *schema.ResourceData, meta interface{}) er
 
 func resourceBigtableInstanceDestroy(d *schema.ResourceData, meta interface{}) error {
 	log.Printf("[DEBUG] Deleting BigTable instance %q", d.Id())
+
+	if ok, err := tpgresource.DeletionPolicyPreDelete(d); err != nil {
+		return err
+	} else if ok {
+		return nil
+	}
+
 	if d.Get("deletion_protection").(bool) {
 		return fmt.Errorf("cannot destroy instance without setting deletion_protection=false and running `terraform apply`")
 	}
@@ -460,7 +537,7 @@ func resourceBigtableInstanceDestroy(d *schema.ResourceData, meta interface{}) e
 		return err
 	}
 
-	c, err := config.BigTableClientFactory(userAgent).NewInstanceAdminClient(project)
+	c, err := NewClientFactory(config, userAgent).NewInstanceAdminClient(project)
 	if err != nil {
 		return fmt.Errorf("Error starting instance admin client. %s", err)
 	}
@@ -471,7 +548,7 @@ func resourceBigtableInstanceDestroy(d *schema.ResourceData, meta interface{}) e
 
 	// If force_destroy is set, delete all backups and unblock deletion of the instance
 	if d.Get("force_destroy").(bool) {
-		adminClient, err := config.BigTableClientFactory(userAgent).NewAdminClient(project, name)
+		adminClient, err := NewClientFactory(config, userAgent).NewAdminClient(project, name)
 		if err != nil {
 			return fmt.Errorf("error starting admin client. %s", err)
 		}
@@ -521,13 +598,24 @@ func flattenBigtableCluster(c *bigtable.ClusterInfo) map[string]interface{} {
 		storageType = "HDD"
 	}
 
+	var nodeScalingFactor string
+	switch c.NodeScalingFactor {
+	case bigtable.NodeScalingFactor1X:
+		nodeScalingFactor = "NodeScalingFactor1X"
+	case bigtable.NodeScalingFactor2X:
+		nodeScalingFactor = "NodeScalingFactor2X"
+	default:
+		nodeScalingFactor = "NodeScalingFactor1X"
+	}
+
 	cluster := map[string]interface{}{
-		"zone":         c.Zone,
-		"num_nodes":    c.ServeNodes,
-		"cluster_id":   c.Name,
-		"storage_type": storageType,
-		"kms_key_name": c.KMSKeyName,
-		"state":        c.State,
+		"zone":                c.Zone,
+		"num_nodes":           c.ServeNodes,
+		"cluster_id":          c.Name,
+		"storage_type":        storageType,
+		"kms_key_name":        c.KMSKeyName,
+		"state":               c.State,
+		"node_scaling_factor": nodeScalingFactor,
 	}
 	if c.AutoscalingConfig != nil {
 		cluster["autoscaling_config"] = make([]map[string]interface{}, 1)
@@ -610,13 +698,21 @@ func expandBigtableClusters(clusters []interface{}, instanceID string, config *t
 			storageType = bigtable.HDD
 		}
 
+		var nodeScalingFactor bigtable.NodeScalingFactor
+		switch cluster["node_scaling_factor"].(string) {
+		case "NodeScalingFactor1X":
+			nodeScalingFactor = bigtable.NodeScalingFactor1X
+		case "NodeScalingFactor2X":
+			nodeScalingFactor = bigtable.NodeScalingFactor2X
+		}
+
 		cluster_config := bigtable.ClusterConfig{
-			InstanceID:  instanceID,
-			Zone:        zone,
-			ClusterID:   cluster["cluster_id"].(string),
-			NumNodes:    int32(cluster["num_nodes"].(int)),
-			StorageType: storageType,
-			KMSKeyName:  cluster["kms_key_name"].(string),
+			InstanceID:        instanceID,
+			Zone:              zone,
+			ClusterID:         cluster["cluster_id"].(string),
+			StorageType:       storageType,
+			KMSKeyName:        cluster["kms_key_name"].(string),
+			NodeScalingFactor: nodeScalingFactor,
 		}
 		autoscaling_configs := cluster["autoscaling_config"].([]interface{})
 		if len(autoscaling_configs) > 0 {
@@ -627,6 +723,10 @@ func expandBigtableClusters(clusters []interface{}, instanceID string, config *t
 				CPUTargetPercent:          autoscaling_config["cpu_target"].(int),
 				StorageUtilizationPerNode: autoscaling_config["storage_target"].(int),
 			}
+		} else {
+			// We only set num_nodes if there is no auto-scaling config, since if
+			// auto-scaling is enabled the number of live nodes is dynamic
+			cluster_config.NumNodes = int32(cluster["num_nodes"].(int))
 		}
 		results = append(results, cluster_config)
 	}
@@ -751,7 +851,7 @@ func resourceBigtableInstanceClusterReorderTypeListFunc(diff tpgresource.Terrafo
 		return err
 	}
 
-	// Clusters can't have their zone, storage_type or kms_key_name updated,
+	// Clusters can't have their zone, storage_type, kms_key_name, or node_scaling_factor updated,
 	// ForceNew if it's changed. This will show a diff with the old state on
 	// the left side and the unmodified new state on the right and the ForceNew
 	// attributed to the _old state index_ even if the diff appears to have moved.
@@ -790,6 +890,14 @@ func resourceBigtableInstanceClusterReorderTypeListFunc(diff tpgresource.Terrafo
 				return fmt.Errorf("Error setting cluster diff: %s", err)
 			}
 		}
+
+		oNSF, nNSF := diff.GetChange(fmt.Sprintf("cluster.%d.node_scaling_factor", i))
+		if oNSF != nNSF {
+			err := diff.ForceNew(fmt.Sprintf("cluster.%d.node_scaling_factor", i))
+			if err != nil {
+				return fmt.Errorf("Error setting cluster diff: %s", err)
+			}
+		}
 	}
 
 	return nil
@@ -798,9 +906,9 @@ func resourceBigtableInstanceClusterReorderTypeListFunc(diff tpgresource.Terrafo
 func resourceBigtableInstanceImport(d *schema.ResourceData, meta interface{}) ([]*schema.ResourceData, error) {
 	config := meta.(*transport_tpg.Config)
 	if err := tpgresource.ParseImportId([]string{
-		"projects/(?P<project>[^/]+)/instances/(?P<name>[^/]+)",
-		"(?P<project>[^/]+)/(?P<name>[^/]+)",
-		"(?P<name>[^/]+)",
+		"^projects/(?P<project>[^/]+)/instances/(?P<name>[^/]+)$",
+		"^(?P<project>[^/]+)/(?P<name>[^/]+)$",
+		"^(?P<name>[^/]+)$",
 	}, d, config); err != nil {
 		return nil, err
 	}
@@ -818,4 +926,13 @@ func resourceBigtableInstanceImport(d *schema.ResourceData, meta interface{}) ([
 	}
 
 	return []*schema.ResourceData{d}, nil
+}
+
+func init() {
+	registry.Schema{
+		Name:        "google_bigtable_instance",
+		ProductName: "bigtable",
+		Type:        registry.SchemaTypeResource,
+		Schema:      ResourceBigtableInstance(),
+	}.Register()
 }

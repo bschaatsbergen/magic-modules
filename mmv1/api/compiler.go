@@ -22,8 +22,9 @@ import (
 
 func Compile(yamlPath string, obj interface{}) {
 	objYaml, err := os.ReadFile(yamlPath)
+
 	if err != nil {
-		log.Fatalf("Cannot open the file: %v", objYaml)
+		log.Fatalf("Cannot open the file: %s", yamlPath)
 	}
 
 	yamlValidator := google.YamlValidator{}

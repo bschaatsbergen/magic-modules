@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-google/google/registry"
+	"github.com/hashicorp/terraform-provider-google/google/services/iambeta"
 	"github.com/hashicorp/terraform-provider-google/google/tpgresource"
 	transport_tpg "github.com/hashicorp/terraform-provider-google/google/transport"
 )
@@ -41,6 +43,10 @@ func DataSourceGoogleServiceAccount() *schema.Resource {
 				Type:     schema.TypeString,
 				Computed: true,
 			},
+			"disabled": {
+				Type:     schema.TypeBool,
+				Computed: true,
+			},
 		},
 	}
 }
@@ -57,7 +63,7 @@ func dataSourceGoogleServiceAccountRead(d *schema.ResourceData, meta interface{}
 		return err
 	}
 
-	sa, err := config.NewIamClient(userAgent).Projects.ServiceAccounts.Get(serviceAccountName).Do()
+	sa, err := iambeta.NewClient(config, userAgent).Projects.ServiceAccounts.Get(serviceAccountName).Do()
 	if err != nil {
 		return transport_tpg.HandleDataSourceNotFoundError(err, d, fmt.Sprintf("Service Account %q", serviceAccountName), serviceAccountName)
 	}
@@ -84,6 +90,18 @@ func dataSourceGoogleServiceAccountRead(d *schema.ResourceData, meta interface{}
 	if err := d.Set("member", "serviceAccount:"+sa.Email); err != nil {
 		return fmt.Errorf("Error setting member: %s", err)
 	}
+	if err := d.Set("disabled", sa.Disabled); err != nil {
+		return fmt.Errorf("Error setting disabled: %s", err)
+	}
 
 	return nil
+}
+
+func init() {
+	registry.Schema{
+		Name:        "google_service_account",
+		ProductName: "resourcemanager",
+		Type:        registry.SchemaTypeDataSource,
+		Schema:      DataSourceGoogleServiceAccount(),
+	}.Register()
 }

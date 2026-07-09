@@ -1,0 +1,132 @@
+{{/*
+	The license inside this block applies to this file
+	Copyright 2024 Google Inc.
+	Licensed under the Apache License, Version 2.0 (the "License");
+	you may not use this file except in compliance with the License.
+	You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+	Unless required by applicable law or agreed to in writing, software
+	distributed under the License is distributed on an "AS IS" BASIS,
+	WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+	See the License for the specific language governing permissions and
+	limitations under the License.
+*/ -}}
+func resourceDatastreamStreamCustomDiffFunc(diff tpgresource.TerraformResourceDiff) error {
+	if diff.HasChange("desired_state") {
+		old, new := diff.GetChange("desired_state")
+		oldState := old.(string)
+		newState := new.(string)
+
+		if tpgresource.IsNewResource(diff) {
+			if newState != "NOT_STARTED" && newState != "RUNNING" {
+				return fmt.Errorf("`desired_state` can only be set to `NOT_STARTED` or `RUNNING` when creating a new Stream")
+			}
+		} else {
+			if newState == "NOT_STARTED" && oldState != newState {
+				return fmt.Errorf("Field `desired_state` cannot be changed to `NOT_STARTED` for an already-created Stream")
+			}
+
+			if oldState == "NOT_STARTED" && newState != "RUNNING" {
+				return fmt.Errorf("Field `desired_state` can only be set to `RUNNING` from `NOT_STARTED`")
+			}
+
+			if newState != "RUNNING" && newState != "PAUSED" {
+				return fmt.Errorf("`desired_state` can only be set to `RUNNING` or `PAUSED` when updating a Stream")
+			}
+		}
+	}
+	return nil
+}
+func resourceDatastreamStreamCustomDiff(_ context.Context, diff *schema.ResourceDiff, meta interface{}) error {
+	// separate func to allow unit testing
+	if err := resourceDatastreamStreamCustomDiffFunc(diff); err != nil {
+		return err
+	}
+	return resourceDatastreamStreamObjectsSetStyleDiff(diff)
+}
+
+// resourceDatastreamStreamObjectsSetStyleDiff suppresses positional diffs on
+// include_objects.objects and exclude_objects.objects inside the Salesforce
+// source config. These arrays are order-independent but use TypeList, so
+// Terraform would otherwise show misleading rename diffs when an object is
+// added or reordered.
+func resourceDatastreamStreamObjectsSetStyleDiff(diff tpgresource.TerraformResourceDiff) error {
+	paths := []string{
+		"source_config.0.salesforce_source_config.0.include_objects.0.objects",
+		"source_config.0.salesforce_source_config.0.exclude_objects.0.objects",
+	}
+	for _, basePath := range paths {
+		keys := diff.GetChangedKeysPrefix(basePath)
+		if len(keys) == 0 {
+			continue
+		}
+		oldCount, newCount := diff.GetChange(basePath + ".#")
+		oldN, _ := oldCount.(int)
+		newN, _ := newCount.(int)
+		if oldN == 0 && newN == 0 {
+			continue
+		}
+		// Real additions or removals: counts differ, so this is not just reordering.
+		if oldN != newN {
+			continue
+		}
+		old := make([]interface{}, 0, oldN)
+		new := make([]interface{}, 0, newN)
+		for i := 0; i < oldN; i++ {
+			o, n := diff.GetChange(fmt.Sprintf("%s.%d", basePath, i))
+			if o != nil {
+				old = append(old, o)
+			}
+			if n != nil {
+				new = append(new, n)
+			}
+		}
+		hashFunc := func(v interface{}) int {
+			m := v.(map[string]interface{})
+			return schema.HashString(m["object_name"])
+		}
+		oldSet := schema.NewSet(hashFunc, old)
+		newSet := schema.NewSet(hashFunc, new)
+		if oldSet.Equal(newSet) {
+			if err := diff.Clear(basePath); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+{{- if not (contains $.ProductMetadata.Compiler "terraformgoogleconversion") }}
+// waitForDatastreamStreamReady waits for an agent pool to reach a stable state to indicate that it's ready.
+func waitForDatastreamStreamReady(d *schema.ResourceData, config *transport_tpg.Config, timeout time.Duration) error {
+	return retry.Retry(timeout, func() *retry.RetryError {
+		if err := resourceDatastreamStreamRead(d, config); err != nil {
+			return retry.NonRetryableError(err)
+		}
+
+		name := d.Get("name").(string)
+		state := d.Get("state").(string)
+		if state == "STARTING" || state == "DRAINING" {
+			return retry.RetryableError(fmt.Errorf("Stream %q has state %q.", name, state))
+		} else if state == "NOT_STARTED" || state == "RUNNING" || state == "PAUSED" {
+			log.Printf("[DEBUG] Stream %q has state %q.", name, state)
+			return nil
+		} else {
+			return retry.NonRetryableError(fmt.Errorf("Stream %q has state %q.", name, state))
+		}
+	})
+}
+{{ end }}
+
+func resourceDatastreamStreamDatabaseIdDiffSuppress(_, old, new string, _ *schema.ResourceData) bool {
+	re := regexp.MustCompile(`projects/(.+)/datasets/([^\.\?\#]+)`)
+	paths := re.FindStringSubmatch(new)
+
+	// db returns value in form <project>:<dataset_id>
+	if len(paths) == 3 {
+		project := paths[1]
+		datasetId := paths[2]
+		new = fmt.Sprintf("%s:%s", project, datasetId)
+	}
+
+	return old == new
+}

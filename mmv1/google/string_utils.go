@@ -27,8 +27,8 @@ import (
 func Underscore(source string) string {
 	tmp := regexp.MustCompile(`([A-Z]+)([A-Z][a-z])`).ReplaceAllString(source, "${1}_${2}")
 	tmp = regexp.MustCompile(`([a-z\d])([A-Z])`).ReplaceAllString(tmp, "${1}_${2}")
-	tmp = strings.Replace(tmp, "-", "_", 1)
-	tmp = strings.Replace(tmp, ".", "_", 1)
+	tmp = strings.ReplaceAll(tmp, "-", "_")
+	tmp = strings.ReplaceAll(tmp, ".", "_")
 	tmp = strings.ToLower(tmp)
 	return tmp
 }
@@ -49,8 +49,7 @@ func SpaceSeparated(source string) string {
 	return tmp
 }
 
-// // Converts a string to space-separated capitalized words
-// def self.title(source)
+// Converts a string to space-separated capitalized words
 func SpaceSeparatedTitle(source string) string {
 	ss := SpaceSeparated(source)
 	return strings.Title(ss)
@@ -58,8 +57,6 @@ func SpaceSeparatedTitle(source string) string {
 
 // Returns all the characters up until the period (.) or returns text
 // unchanged if there is no period.
-//
-//	def self.first_sentence(text)
 func FirstSentence(text string) string {
 	re := regexp.MustCompile(`[.?!]`)
 	periodPos := re.FindStringIndex(text)
@@ -86,7 +83,8 @@ func Plural(source string) string {
 	}
 
 	// mesh -> meshes
-	if strings.HasSuffix(source, "esh") {
+	// messageBus -> messageBuses
+	if strings.HasSuffix(source, "esh") || strings.HasSuffix(source, "s") {
 		return fmt.Sprintf("%ses", source)
 	}
 
@@ -117,11 +115,6 @@ func Camelize(term string, firstLetter string) string {
 			return strings.Title(match)
 		})
 	} else {
-		// TODO: rewrite with the regular expression. Lookahead(?=) is not supported in Go
-		// 	acronymsCamelizeRegex := regexp.MustCompile(`^(?:(?=a)b(?=\b|[A-Z_])|\w)`)
-		// 	res = acronymsCamelizeRegex.ReplaceAllStringFunc(res, func(match string) string {
-		// 		return strings.ToLower(match)
-		// 	})
 		if len(res) != 0 {
 			r := []rune(res)
 			r[0] = unicode.ToLower(r[0])
@@ -155,7 +148,7 @@ aren't common in JS-based regex flavours, but are in Perl-based ones
 func Format2Regex(format string) string {
 	re := regexp.MustCompile(`\{\{%([[:word:]]+)\}\}`)
 	result := re.ReplaceAllStringFunc(format, func(match string) string {
-		// TODO: the trims may not be needed with more effecient regex
+		// TODO rewrite: the trims may not be needed with more effecient regex
 		word := strings.TrimPrefix(match, "{{")
 		word = strings.TrimSuffix(word, "}}")
 		word = strings.ReplaceAll(word, "%", "")

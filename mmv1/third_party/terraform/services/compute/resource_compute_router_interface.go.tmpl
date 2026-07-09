@@ -1,0 +1,505 @@
+package compute
+
+import (
+	"fmt"
+	"log"
+	"time"
+
+	"strings"
+
+	"github.com/hashicorp/terraform-provider-google/google/registry"
+	"github.com/hashicorp/terraform-provider-google/google/tpgresource"
+	transport_tpg "github.com/hashicorp/terraform-provider-google/google/transport"
+
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-google/google/verify"
+
+)
+
+func ResourceComputeRouterInterface() *schema.Resource {
+	return &schema.Resource{
+		Create: resourceComputeRouterInterfaceCreate,
+		Read:   resourceComputeRouterInterfaceRead,
+		Update: resourceComputeRouterInterfaceUpdate,
+		Delete: resourceComputeRouterInterfaceDelete,
+		Importer: &schema.ResourceImporter{
+			State: resourceComputeRouterInterfaceImportState,
+		},
+
+		Timeouts: &schema.ResourceTimeout{
+			Create: schema.DefaultTimeout(4 * time.Minute),
+			Delete: schema.DefaultTimeout(4 * time.Minute),
+		},
+
+		CustomizeDiff: customdiff.All(
+            tpgresource.DefaultProviderDeletionPolicy("DELETE"),
+			tpgresource.DefaultProviderProject,
+			tpgresource.DefaultProviderRegion,
+		),
+
+		Schema: map[string]*schema.Schema{
+			"name": {
+				Type:        schema.TypeString,
+				Required:    true,
+				ForceNew:    true,
+				Description: `A unique name for the interface, required by GCE. Changing this forces a new interface to be created.`,
+			},
+			"router": {
+				Type:        schema.TypeString,
+				Required:    true,
+				ForceNew:    true,
+				Description: `The name of the router this interface will be attached to. Changing this forces a new interface to be created.`,
+			},
+			"vpn_tunnel": {
+				Type:             schema.TypeString,
+				Optional:         true,
+				ForceNew:         true,
+				DiffSuppressFunc: tpgresource.CompareSelfLinkOrResourceName,
+				AtLeastOneOf:     []string{"ip_range", "interconnect_attachment", "subnetwork", "vpn_tunnel"},
+				ConflictsWith:    []string{"interconnect_attachment", "subnetwork"},
+				Description:      `The name or resource link to the VPN tunnel this interface will be linked to. Changing this forces a new interface to be created. Only one of vpn_tunnel, interconnect_attachment or subnetwork can be specified.`,
+			},
+			"interconnect_attachment": {
+				Type:             schema.TypeString,
+				Optional:         true,
+				ForceNew:         true,
+				DiffSuppressFunc: tpgresource.CompareSelfLinkOrResourceName,
+				AtLeastOneOf:     []string{"ip_range", "interconnect_attachment", "subnetwork", "vpn_tunnel"},
+				ConflictsWith:    []string{"subnetwork", "vpn_tunnel"},
+				Description:      `The name or resource link to the VLAN interconnect for this interface. Changing this forces a new interface to be created. Only one of interconnect_attachment, subnetwork or vpn_tunnel can be specified.`,
+			},
+			"ip_range": {
+				Type:           schema.TypeString,
+				Optional:       true,
+				ForceNew:       true,
+				Computed:       true,
+				AtLeastOneOf:   []string{"ip_range", "interconnect_attachment", "subnetwork", "vpn_tunnel"},
+				Description:    `The IP address and range of the interface. The IP range must be in the RFC3927 link-local IP space. Changing this forces a new interface to be created.`,
+			},	
+			"ip_version": {
+				Type:         schema.TypeString,
+				Optional:     true,
+				ForceNew:     true,
+				Computed:     true,
+				ValidateFunc: verify.ValidateEnum([]string{"IPV4", "IPV6"}),
+				Description:  `IP version of this interface.`,
+			},
+			"private_ip_address": {
+				Type:         schema.TypeString,
+				Optional:     true,
+				ForceNew:     true,
+				Description:  `The regional private internal IP address that is used to establish BGP sessions to a VM instance acting as a third-party Router Appliance. Changing this forces a new interface to be created.`,
+			},
+			"subnetwork": {
+				Type:             schema.TypeString,
+				Optional:         true,
+				ForceNew:         true,
+				DiffSuppressFunc: tpgresource.CompareSelfLinkOrResourceName,
+				AtLeastOneOf:     []string{"ip_range", "interconnect_attachment", "subnetwork", "vpn_tunnel"},
+				ConflictsWith:    []string{"interconnect_attachment", "vpn_tunnel"},
+				Description:      `The URI of the subnetwork resource that this interface belongs to, which must be in the same region as the Cloud Router. Changing this forces a new interface to be created. Only one of subnetwork, interconnect_attachment or vpn_tunnel can be specified.`,
+			},
+			"project": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				Computed:    true,
+				ForceNew:    true,
+				Description: `The ID of the project in which this interface's router belongs. If it is not provided, the provider project is used. Changing this forces a new interface to be created.`,
+			},
+			"region": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				Computed:    true,
+				ForceNew:    true,
+				Description: `The region this interface's router sits in. If not specified, the project region will be used. Changing this forces a new interface to be created.`,
+			},
+
+			"redundant_interface": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				Computed:    true,
+				ForceNew:    true,
+				Description: `The name of the interface that is redundant to this interface. Changing this forces a new interface to be created.`,
+			},
+			//UDP schema start
+            "deletion_policy": tpgresource.DeletionPolicySchemaEntry("DELETE"),
+//UDP schema end
+		},
+		UseJSONNumber: true,
+	}
+}
+
+func resourceComputeRouterInterfaceCreate(d *schema.ResourceData, meta interface{}) error {
+	config := meta.(*transport_tpg.Config)
+	userAgent, err :=  tpgresource.GenerateUserAgentString(d, config.UserAgent)
+	if err != nil {
+		return err
+	}
+
+	region, err := tpgresource.GetRegion(d, config)
+	if err != nil {
+		return err
+	}
+
+	project, err := tpgresource.GetProject(d, config)
+	if err != nil {
+		return err
+	}
+
+	routerName := d.Get("router").(string)
+	ifaceName := d.Get("name").(string)
+
+	routerLock := tpgresource.GetRouterLockName(region, routerName)
+	transport_tpg.MutexStore.Lock(routerLock)
+	defer transport_tpg.MutexStore.Unlock(routerLock)
+
+	url, err := tpgresource.ReplaceVars(d, config, "{{"{{"}}ComputeBasePath{{"}}"}}projects/{{"{{"}}project{{"}}"}}/regions/{{"{{"}}region{{"}}"}}/routers/{{"{{"}}router{{"}}"}}")
+	if err != nil {
+		return err
+	}
+
+	router, err := transport_tpg.SendRequest(transport_tpg.SendRequestOptions{
+		Config:    config,
+		Method:    "GET",
+		Project:   project,
+		RawURL:    url,
+		UserAgent: userAgent,
+	})
+	if err != nil {
+		if transport_tpg.IsGoogleApiErrorWithCode(err, 404) {
+			log.Printf("[WARN] Removing router interface %s because its router %s/%s is gone", ifaceName, region, routerName)
+			d.SetId("")
+			return nil
+		}
+		return fmt.Errorf("Error Reading router %s/%s: %s", region, routerName, err)
+	}
+
+	var ifaces []interface{}
+	if ifacesRaw, ok := router["interfaces"].([]interface{}); ok {
+		ifaces = ifacesRaw
+	}
+
+	for _, rawIface := range ifaces {
+		existingIface, ok := rawIface.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if existingIface["name"] == ifaceName {
+			d.SetId("")
+			return fmt.Errorf("Router %s has interface %s already", routerName, ifaceName)
+		}
+	}
+
+	iface := map[string]interface{}{"name": ifaceName}
+
+	if riVal, ok := d.GetOk("redundant_interface"); ok {
+		iface["redundantInterface"] = riVal.(string)
+	}
+
+	if ipRangeVal, ok := d.GetOk("ip_range"); ok {
+		iface["ipRange"] = ipRangeVal.(string)
+	}
+
+	if ipVersionVal, ok := d.GetOk("ip_version"); ok {
+		iface["ipVersion"] = ipVersionVal.(string)
+	}
+
+	if privateIpVal, ok := d.GetOk("private_ip_address"); ok {
+		iface["privateIpAddress"] = privateIpVal.(string)
+	}
+
+	if vpnVal, ok := d.GetOk("vpn_tunnel"); ok {
+		vpnTunnel, err := getVpnTunnelLink(config, project, region, vpnVal.(string), userAgent)
+		if err != nil {
+			return err
+		}
+		iface["linkedVpnTunnel"] = vpnTunnel
+	}
+
+	if icVal, ok := d.GetOk("interconnect_attachment"); ok {
+		interconnectAttachment, err := GetInterconnectAttachmentLink(config, project, region, icVal.(string), userAgent)
+		if err != nil {
+			return err
+		}
+		iface["linkedInterconnectAttachment"] = interconnectAttachment
+	}
+
+	if subVal, ok := d.GetOk("subnetwork"); ok {
+		iface["subnetwork"] = subVal.(string)
+	}
+
+	log.Printf("[INFO] Adding interface %s", ifaceName)
+	ifaces = append(ifaces, iface)
+	patchRouter := map[string]interface{}{
+		"interfaces": ifaces,
+	}
+
+	log.Printf("[DEBUG] Updating router %s/%s with interfaces: %+v", region, routerName, ifaces)
+	res, err := transport_tpg.SendRequest(transport_tpg.SendRequestOptions{
+		Config:    config,
+		Method:    "PATCH",
+		Project:   project,
+		RawURL:    url,
+		UserAgent: userAgent,
+		Body:      patchRouter,
+	})
+	if err != nil {
+		return fmt.Errorf("Error patching router %s/%s: %s", region, routerName, err)
+	}
+	d.SetId(fmt.Sprintf("%s/%s/%s", region, routerName, ifaceName))
+	err = ComputeOperationWaitTime(config, res, project, "Patching router", userAgent, d.Timeout(schema.TimeoutCreate))
+	if err != nil {
+		d.SetId("")
+		return fmt.Errorf("Error waiting to patch router %s/%s: %s", region, routerName, err)
+	}
+
+	return resourceComputeRouterInterfaceRead(d, meta)
+}
+
+func resourceComputeRouterInterfaceRead(d *schema.ResourceData, meta interface{}) error {
+	config := meta.(*transport_tpg.Config)
+	userAgent, err :=  tpgresource.GenerateUserAgentString(d, config.UserAgent)
+	if err != nil {
+		return err
+	}
+
+	region, err := tpgresource.GetRegion(d, config)
+	if err != nil {
+		return err
+	}
+
+	project, err := tpgresource.GetProject(d, config)
+	if err != nil {
+		return err
+	}
+
+	routerName := d.Get("router").(string)
+	ifaceName := d.Get("name").(string)
+
+	url, err := tpgresource.ReplaceVars(d, config, "{{"{{"}}ComputeBasePath{{"}}"}}projects/{{"{{"}}project{{"}}"}}/regions/{{"{{"}}region{{"}}"}}/routers/{{"{{"}}router{{"}}"}}")
+	if err != nil {
+		return err
+	}
+
+	router, err := transport_tpg.SendRequest(transport_tpg.SendRequestOptions{
+		Config:    config,
+		Method:    "GET",
+		Project:   project,
+		RawURL:    url,
+		UserAgent: userAgent,
+	})
+	if err != nil {
+		if transport_tpg.IsGoogleApiErrorWithCode(err, 404) {
+			log.Printf("[WARN] Removing router interface %s because its router %s/%s is gone", ifaceName, region, routerName)
+			d.SetId("")
+			return nil
+		}
+		return fmt.Errorf("Error Reading router %s/%s: %s", region, routerName, err)
+	}
+
+	ifaces, _ := router["interfaces"].([]interface{})
+	for _, rawIface := range ifaces {
+		iface, ok := rawIface.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if iface["name"] == ifaceName {
+			d.SetId(fmt.Sprintf("%s/%s/%s", region, routerName, ifaceName))
+			if err := d.Set("vpn_tunnel", iface["linkedVpnTunnel"]); err != nil {
+				return fmt.Errorf("Error setting vpn_tunnel: %s", err)
+			}
+			if err := d.Set("interconnect_attachment", iface["linkedInterconnectAttachment"]); err != nil {
+				return fmt.Errorf("Error setting interconnect_attachment: %s", err)
+			}
+			if err := d.Set("ip_range", iface["ipRange"]); err != nil {
+				return fmt.Errorf("Error setting ip_range: %s", err)
+			}
+			if err := d.Set("ip_version", iface["ipVersion"]); err != nil {
+				return fmt.Errorf("Error setting ip_version: %s", err)
+			}
+			if err := d.Set("private_ip_address", iface["privateIpAddress"]); err != nil {
+				return fmt.Errorf("Error setting private_ip_address: %s", err)
+			}
+			if err := d.Set("subnetwork", iface["subnetwork"]); err != nil {
+				return fmt.Errorf("Error setting subnetwork: %s", err)
+			}
+			if err := d.Set("region", region); err != nil {
+				return fmt.Errorf("Error setting region: %s", err)
+			}
+			if err := d.Set("project", project); err != nil {
+				return fmt.Errorf("Error setting project: %s", err)
+			}
+			if err := d.Set("redundant_interface", iface["redundantInterface"]); err != nil {
+				return fmt.Errorf("Error setting redundant interface: %s", err)
+			}
+		        
+    if err := tpgresource.DeletionPolicyReadDefault(d, config, "DELETE"); err != nil{
+        return err
+    }
+    
+			return nil
+		}
+	}
+
+	log.Printf("[WARN] Removing router interface %s/%s/%s because it is gone", region, routerName, ifaceName)
+	d.SetId("")
+	return nil
+}
+
+//UDP update start
+func resourceComputeRouterInterfaceUpdate(d *schema.ResourceData, meta interface{}) error {
+    // Only the root field "deletion_policy", "labels", "terraform_labels", and virtual fields are mutable
+    return resourceComputeRouterInterfaceRead(d, meta)
+}
+//UDP update end
+
+func resourceComputeRouterInterfaceDelete(d *schema.ResourceData, meta interface{}) error {
+    
+    if ok, err := tpgresource.DeletionPolicyPreDelete(d); err != nil{
+        return err
+    }else if ok{
+        return nil
+    }
+    	
+    config :=  meta.(*transport_tpg.Config)
+	userAgent, err :=  tpgresource.GenerateUserAgentString(d, config.UserAgent)
+	if err != nil {
+		return err
+	}
+
+	region, err := tpgresource.GetRegion(d, config)
+	if err != nil {
+		return err
+	}
+
+	project, err := tpgresource.GetProject(d, config)
+	if err != nil {
+		return err
+	}
+
+	routerName := d.Get("router").(string)
+	ifaceName := d.Get("name").(string)
+
+	routerLock := tpgresource.GetRouterLockName(region, routerName)
+	transport_tpg.MutexStore.Lock(routerLock)
+	defer transport_tpg.MutexStore.Unlock(routerLock)
+
+	url, err := tpgresource.ReplaceVars(d, config, "{{"{{"}}ComputeBasePath{{"}}"}}projects/{{"{{"}}project{{"}}"}}/regions/{{"{{"}}region{{"}}"}}/routers/{{"{{"}}router{{"}}"}}")
+	if err != nil {
+		return err
+	}
+
+	router, err := transport_tpg.SendRequest(transport_tpg.SendRequestOptions{
+		Config:    config,
+		Method:    "GET",
+		Project:   project,
+		RawURL:    url,
+		UserAgent: userAgent,
+	})
+	if err != nil {
+		if transport_tpg.IsGoogleApiErrorWithCode(err, 404) {
+			log.Printf("[WARN] Removing router interface %s because its router %s/%s is gone", ifaceName, region, routerName)
+			return nil
+		}
+		return fmt.Errorf("Error Reading Router %s: %s", routerName, err)
+	}
+
+	var ifaceFound bool
+
+	ifaces, _ := router["interfaces"].([]interface{})
+	newIfaces := make([]interface{}, 0, len(ifaces))
+	for _, rawIface := range ifaces {
+		iface, ok := rawIface.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if iface["name"] == ifaceName {
+			ifaceFound = true
+			continue
+		}
+		// If this is a redundant interface,
+		// remove its reference from other interfaces as well
+		if iface["redundantInterface"] == ifaceName {
+			delete(iface, "redundantInterface")
+		}
+		newIfaces = append(newIfaces, iface)
+	}
+
+	if !ifaceFound {
+		log.Printf("[DEBUG] Router %s/%s had no interface %s already", region, routerName, ifaceName)
+		d.SetId("")
+		return nil
+	}
+
+	log.Printf(
+		"[INFO] Removing interface %s from router %s/%s", ifaceName, region, routerName)
+	patchRouter := map[string]interface{}{
+		"interfaces": newIfaces,
+	}
+
+	log.Printf("[DEBUG] Updating router %s/%s with interfaces: %+v", region, routerName, newIfaces)
+	res, err := transport_tpg.SendRequest(transport_tpg.SendRequestOptions{
+		Config:    config,
+		Method:    "PATCH",
+		Project:   project,
+		RawURL:    url,
+		UserAgent: userAgent,
+		Body:      patchRouter,
+	})
+	if err != nil {
+		return fmt.Errorf("Error patching router %s/%s: %s", region, routerName, err)
+	}
+
+	err = ComputeOperationWaitTime(config, res, project, "Patching router", userAgent, d.Timeout(schema.TimeoutDelete))
+	if err != nil {
+		return fmt.Errorf("Error waiting to patch router %s/%s: %s", region, routerName, err)
+	}
+
+	d.SetId("")
+	return nil
+}
+
+func resourceComputeRouterInterfaceImportState(d *schema.ResourceData, meta interface{}) ([]*schema.ResourceData, error) {
+	parts := strings.Split(d.Id(), "/")
+	switch len(parts) {
+	case 3:
+		// {{"{{"}}region{{"}}"}}/{{"{{"}}router{{"}}"}}/{{"{{"}}name{{"}}"}} import id
+		if err := d.Set("region", parts[0]); err != nil {
+			return nil, fmt.Errorf("error setting region: %s", err)
+		}
+		if err := d.Set("router", parts[1]); err != nil {
+			return nil, fmt.Errorf("error setting router: %s", err)
+		}
+		if err := d.Set("name", parts[2]); err != nil {
+			return nil, fmt.Errorf("error setting name: %s", err)
+		}
+		return []*schema.ResourceData{d}, nil
+	case 4:
+		// {{"{{"}}project{{"}}"}}/{{"{{"}}region{{"}}"}}/{{"{{"}}router{{"}}"}}/{{"{{"}}name{{"}}"}} import id
+		if err := d.Set("project", parts[0]); err != nil {
+			return nil, fmt.Errorf("error setting project: %s", err)
+		}
+		if err := d.Set("region", parts[1]); err != nil {
+			return nil, fmt.Errorf("error setting region: %s", err)
+		}
+		if err := d.Set("router", parts[2]); err != nil {
+			return nil, fmt.Errorf("error setting router: %s", err)
+		}
+		if err := d.Set("name", parts[3]); err != nil {
+			return nil, fmt.Errorf("error setting name: %s", err)
+		}
+		return []*schema.ResourceData{d}, nil
+	}
+
+	return nil, fmt.Errorf("invalid router interface specifier. Expecting either {region}/{router}/{interface} or {project}/{region}/{router}/{interface} import id format")
+}
+
+func init() {
+	registry.Schema{
+		Name: "google_compute_router_interface",
+		ProductName: "compute",
+		Type: registry.SchemaTypeResource,
+		Schema: ResourceComputeRouterInterface(),
+	}.Register()
+}

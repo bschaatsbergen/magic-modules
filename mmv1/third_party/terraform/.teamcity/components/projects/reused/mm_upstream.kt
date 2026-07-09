@@ -1,5 +1,5 @@
 /*
- * Copyright (c) HashiCorp, Inc.
+ * Copyright IBM Corp. 2014, 2026
  * SPDX-License-Identifier: MPL-2.0
  */
 
@@ -14,12 +14,7 @@ import ServiceSweeperCronName
 import ServiceSweeperManualName
 import SharedResourceNameVcr
 import builds.*
-import generated.PackagesListBeta
-import generated.PackagesListGa
-import generated.ServicesListBeta
-import generated.ServicesListGa
-import generated.SweepersListBeta
-import generated.SweepersListGa
+import generated.*
 import jetbrains.buildServer.configs.kotlin.BuildType
 import jetbrains.buildServer.configs.kotlin.Project
 import jetbrains.buildServer.configs.kotlin.vcs.GitVcsRoot

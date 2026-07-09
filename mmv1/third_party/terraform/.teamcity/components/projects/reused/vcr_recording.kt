@@ -1,5 +1,5 @@
 /*
- * Copyright (c) HashiCorp, Inc.
+ * Copyright IBM Corp. 2014, 2026
  * SPDX-License-Identifier: MPL-2.0
  */
 
@@ -9,7 +9,8 @@ package projects.reused
 
 import SharedResourceNameVcr
 import VcrRecordingProjectId
-import builds.*
+import builds.AccTestConfiguration
+import builds.VcrDetails
 import jetbrains.buildServer.configs.kotlin.Project
 import jetbrains.buildServer.configs.kotlin.vcs.GitVcsRoot
 import replaceCharsId

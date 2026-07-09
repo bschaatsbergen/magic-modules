@@ -11,6 +11,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+
+	"github.com/hashicorp/terraform-provider-google/google/registry"
+	"github.com/hashicorp/terraform-provider-google/google/services/compute"
 	"github.com/hashicorp/terraform-provider-google/google/tpgresource"
 	transport_tpg "github.com/hashicorp/terraform-provider-google/google/transport"
 	"google.golang.org/api/dns/v1"
@@ -93,10 +96,38 @@ func ResourceDnsRecordSet() *schema.Resource {
 		Importer: &schema.ResourceImporter{
 			State: resourceDnsRecordSetImportState,
 		},
-
 		CustomizeDiff: customdiff.All(
+			tpgresource.DefaultProviderDeletionPolicy("DELETE"),
 			tpgresource.DefaultProviderProject,
 		),
+
+		Identity: &schema.ResourceIdentity{
+			Version: 1,
+			SchemaFunc: func() map[string]*schema.Schema {
+				return map[string]*schema.Schema{
+					"project": {
+						Type:              schema.TypeString,
+						OptionalForImport: true,
+					},
+					"managed_zone": {
+						Type:              schema.TypeString,
+						RequiredForImport: true,
+					},
+					"name": {
+						Type:              schema.TypeString,
+						RequiredForImport: true,
+					},
+					"type": {
+						Type:              schema.TypeString,
+						RequiredForImport: true,
+					},
+				}
+			},
+		},
+
+		ResourceBehavior: schema.ResourceBehavior{
+			MutableIdentity: true,
+		},
 
 		Schema: map[string]*schema.Schema{
 			"managed_zone": {
@@ -211,6 +242,12 @@ func ResourceDnsRecordSet() *schema.Resource {
 							ExactlyOneOf:  []string{"routing_policy.0.wrr", "routing_policy.0.geo", "routing_policy.0.primary_backup"},
 							ConflictsWith: []string{"routing_policy.0.enable_geo_fencing"},
 						},
+						"health_check": {
+							Type:        schema.TypeString,
+							Optional:    true,
+							ForceNew:    true,
+							Description: "Specifies the health check.",
+						},
 					},
 				},
 				ExactlyOneOf: []string{"rrdatas", "routing_policy"},
@@ -235,6 +272,9 @@ func ResourceDnsRecordSet() *schema.Resource {
 				ForceNew:    true,
 				Description: `The ID of the project in which the resource belongs. If it is not provided, the provider project is used.`,
 			},
+			//UDP schema start
+			"deletion_policy": tpgresource.DeletionPolicySchemaEntry("DELETE"),
+			//UDP schema end
 		},
 		UseJSONNumber: true,
 	}
@@ -268,7 +308,7 @@ var healthCheckedTargetSchema *schema.Resource = &schema.Resource{
 	Schema: map[string]*schema.Schema{
 		"internal_load_balancers": {
 			Type:        schema.TypeList,
-			Required:    true,
+			Optional:    true,
 			Description: "The list of internal load balancers to health check.",
 			Elem: &schema.Resource{
 				Schema: map[string]*schema.Schema{
@@ -312,6 +352,14 @@ var healthCheckedTargetSchema *schema.Resource = &schema.Resource{
 						Description: "The region of the load balancer. Only needed for regional load balancers.",
 					},
 				},
+			},
+		},
+		"external_endpoints": {
+			Type:        schema.TypeList,
+			Description: "The Internet IP addresses to be health checked.",
+			Optional:    true,
+			Elem: &schema.Schema{
+				Type: schema.TypeString,
 			},
 		},
 	},
@@ -359,7 +407,7 @@ func resourceDnsRecordSetCreate(d *schema.ResourceData, meta interface{}) error 
 	// delete them, before adding in the changes requested.  Normally this would
 	// result in an AlreadyExistsError.
 	log.Printf("[DEBUG] DNS record list request for %q", zone)
-	res, err := config.NewDnsClient(userAgent).ResourceRecordSets.List(project, zone).Do()
+	res, err := NewClient(config, userAgent).ResourceRecordSets.List(project, zone).Do()
 	if err != nil {
 		return fmt.Errorf("Error retrieving record sets for %q: %s", zone, err)
 	}
@@ -375,8 +423,16 @@ func resourceDnsRecordSetCreate(d *schema.ResourceData, meta interface{}) error 
 		chg.Deletions = deletions
 	}
 
+	// Mutex
+	lockName := fmt.Sprintf("projects/%s/managedZones/%s/rrsets/%s/%s", project, zone, name, rType)
+	if err != nil {
+		return err
+	}
+	transport_tpg.MutexStore.Lock(lockName)
+	defer transport_tpg.MutexStore.Unlock(lockName)
+
 	log.Printf("[DEBUG] DNS Record create request: %#v", chg)
-	chg, err = config.NewDnsClient(userAgent).Changes.Create(project, zone, chg).Do()
+	chg, err = NewClient(config, userAgent).Changes.Create(project, zone, chg).Do()
 	if err != nil {
 		return fmt.Errorf("Error creating DNS RecordSet: %s", err)
 	}
@@ -384,7 +440,7 @@ func resourceDnsRecordSetCreate(d *schema.ResourceData, meta interface{}) error 
 	d.SetId(fmt.Sprintf("projects/%s/managedZones/%s/rrsets/%s/%s", project, zone, name, rType))
 
 	w := &DnsChangeWaiter{
-		Service:     config.NewDnsClient(userAgent),
+		Service:     NewClient(config, userAgent),
 		Change:      chg,
 		Project:     project,
 		ManagedZone: zone,
@@ -419,7 +475,7 @@ func resourceDnsRecordSetRead(d *schema.ResourceData, meta interface{}) error {
 	err = transport_tpg.Retry(transport_tpg.RetryOptions{
 		RetryFunc: func() error {
 			var reqErr error
-			resp, reqErr = config.NewDnsClient(userAgent).ResourceRecordSets.List(
+			resp, reqErr = NewClient(config, userAgent).ResourceRecordSets.List(
 				project, zone).Name(name).Type(dnsType).Do()
 			return reqErr
 		},
@@ -453,10 +509,29 @@ func resourceDnsRecordSetRead(d *schema.ResourceData, meta interface{}) error {
 		return fmt.Errorf("Error setting project: %s", err)
 	}
 
+	if err := tpgresource.DeletionPolicyReadDefault(d, config, "DELETE"); err != nil {
+		return err
+	}
+	if err := tpgresource.SetResourceIdentityAttributes(d, map[string]interface{}{
+		"project":      project,
+		"managed_zone": zone,
+		"name":         rrset.Name,
+		"type":         rrset.Type,
+	}); err != nil {
+		return fmt.Errorf("Error setting resource identity: %s", err)
+	}
+
 	return nil
 }
 
 func resourceDnsRecordSetDelete(d *schema.ResourceData, meta interface{}) error {
+
+	if ok, err := tpgresource.DeletionPolicyPreDelete(d); err != nil {
+		return err
+	} else if ok {
+		return nil
+	}
+
 	config := meta.(*transport_tpg.Config)
 	userAgent, err := tpgresource.GenerateUserAgentString(d, config.UserAgent)
 	if err != nil {
@@ -468,7 +543,9 @@ func resourceDnsRecordSetDelete(d *schema.ResourceData, meta interface{}) error 
 		return err
 	}
 
+	name := d.Get("name").(string)
 	zone := d.Get("managed_zone").(string)
+	rType := d.Get("type").(string)
 
 	// NS and SOA records on the root zone must always have a value,
 	// so we short-circuit delete this allows terraform delete to work,
@@ -481,7 +558,7 @@ func resourceDnsRecordSetDelete(d *schema.ResourceData, meta interface{}) error 
 	// This does not apply to SOA, as they can only be set on the root
 	// zone.
 	if d.Get("type").(string) == "NS" || d.Get("type").(string) == "SOA" {
-		mz, err := config.NewDnsClient(userAgent).ManagedZones.Get(project, zone).Do()
+		mz, err := NewClient(config, userAgent).ManagedZones.Get(project, zone).Do()
 		if err != nil {
 			return fmt.Errorf("Error retrieving managed zone %q from %q: %s", zone, project, err)
 		}
@@ -511,14 +588,22 @@ func resourceDnsRecordSetDelete(d *schema.ResourceData, meta interface{}) error 
 		},
 	}
 
+	// Mutex
+	lockName := fmt.Sprintf("projects/%s/managedZones/%s/rrsets/%s/%s", project, zone, name, rType)
+	if err != nil {
+		return err
+	}
+	transport_tpg.MutexStore.Lock(lockName)
+	defer transport_tpg.MutexStore.Unlock(lockName)
+
 	log.Printf("[DEBUG] DNS Record delete request: %#v", chg)
-	chg, err = config.NewDnsClient(userAgent).Changes.Create(project, zone, chg).Do()
+	chg, err = NewClient(config, userAgent).Changes.Create(project, zone, chg).Do()
 	if err != nil {
 		return transport_tpg.HandleNotFoundError(err, d, "google_dns_record_set")
 	}
 
 	w := &DnsChangeWaiter{
-		Service:     config.NewDnsClient(userAgent),
+		Service:     NewClient(config, userAgent),
 		Change:      chg,
 		Project:     project,
 		ManagedZone: zone,
@@ -533,6 +618,11 @@ func resourceDnsRecordSetDelete(d *schema.ResourceData, meta interface{}) error 
 }
 
 func resourceDnsRecordSetUpdate(d *schema.ResourceData, meta interface{}) error {
+
+	if tpgresource.DeletionPolicyPreUpdate(d, ResourceDnsRecordSet) {
+		return ResourceDnsRecordSet().Read(d, meta)
+	}
+
 	config := meta.(*transport_tpg.Config)
 	userAgent, err := tpgresource.GenerateUserAgentString(d, config.UserAgent)
 	if err != nil {
@@ -593,13 +683,13 @@ func resourceDnsRecordSetUpdate(d *schema.ResourceData, meta interface{}) error 
 		chg.Deletions[0].Rrdatas[i] = oldRR.(string)
 	}
 	log.Printf("[DEBUG] DNS Record change request: %#v old: %#v new: %#v", chg, chg.Deletions[0], chg.Additions[0])
-	chg, err = config.NewDnsClient(userAgent).Changes.Create(project, zone, chg).Do()
+	chg, err = NewClient(config, userAgent).Changes.Create(project, zone, chg).Do()
 	if err != nil {
 		return fmt.Errorf("Error changing DNS RecordSet: %s", err)
 	}
 
 	w := &DnsChangeWaiter{
-		Service:     config.NewDnsClient(userAgent),
+		Service:     NewClient(config, userAgent),
 		Change:      chg,
 		Project:     project,
 		ManagedZone: zone,
@@ -616,9 +706,9 @@ func resourceDnsRecordSetUpdate(d *schema.ResourceData, meta interface{}) error 
 func resourceDnsRecordSetImportState(d *schema.ResourceData, meta interface{}) ([]*schema.ResourceData, error) {
 	config := meta.(*transport_tpg.Config)
 	if err := tpgresource.ParseImportId([]string{
-		"projects/(?P<project>[^/]+)/managedZones/(?P<managed_zone>[^/]+)/rrsets/(?P<name>[^/]+)/(?P<type>[^/]+)",
-		"(?P<project>[^/]+)/(?P<managed_zone>[^/]+)/(?P<name>[^/]+)/(?P<type>[^/]+)",
-		"(?P<managed_zone>[^/]+)/(?P<name>[^/]+)/(?P<type>[^/]+)",
+		"^projects/(?P<project>[^/]+)/managedZones/(?P<managed_zone>[^/]+)/rrsets/(?P<name>[^/]+)/(?P<type>[^/]+)$",
+		"^(?P<project>[^/]+)/(?P<managed_zone>[^/]+)/(?P<name>[^/]+)/(?P<type>[^/]+)$",
+		"^(?P<managed_zone>[^/]+)/(?P<name>[^/]+)/(?P<type>[^/]+)$",
 	}, d, config); err != nil {
 		return nil, err
 	}
@@ -652,11 +742,13 @@ func expandDnsRecordSetRoutingPolicy(configured []interface{}, d tpgresource.Ter
 		if err != nil {
 			return nil, err
 		}
-		return &dns.RRSetRoutingPolicy{
+		rp := &dns.RRSetRoutingPolicy{
+			HealthCheck: data["health_check"].(string),
 			Wrr: &dns.RRSetRoutingPolicyWrrPolicy{
 				Items: wrrItems,
 			},
-		}, nil
+		}
+		return rp, nil
 	}
 
 	if len(geoRawItems) > 0 {
@@ -664,12 +756,14 @@ func expandDnsRecordSetRoutingPolicy(configured []interface{}, d tpgresource.Ter
 		if err != nil {
 			return nil, err
 		}
-		return &dns.RRSetRoutingPolicy{
+		rp := &dns.RRSetRoutingPolicy{
+			HealthCheck: data["health_check"].(string),
 			Geo: &dns.RRSetRoutingPolicyGeoPolicy{
 				Items:         geoItems,
 				EnableFencing: data["enable_geo_fencing"].(bool),
 			},
-		}, nil
+		}
+		return rp, nil
 	}
 
 	if len(rawPrimaryBackup) > 0 {
@@ -677,9 +771,12 @@ func expandDnsRecordSetRoutingPolicy(configured []interface{}, d tpgresource.Ter
 		if err != nil {
 			return nil, err
 		}
-		return &dns.RRSetRoutingPolicy{
+
+		rp := &dns.RRSetRoutingPolicy{
+			HealthCheck:   data["health_check"].(string),
 			PrimaryBackup: primaryBackup,
-		}, nil
+		}
+		return rp, nil
 	}
 
 	return nil, nil // unreachable here if ps is valid data
@@ -741,13 +838,22 @@ func expandDnsRecordSetHealthCheckedTargets(configured []interface{}, d tpgresou
 	}
 
 	data := configured[0].(map[string]interface{})
-	internalLoadBalancers, err := expandDnsRecordSetHealthCheckedTargetsInternalLoadBalancers(data["internal_load_balancers"].([]interface{}), d, config)
-	if err != nil {
-		return nil, err
+	if ilbs := data["internal_load_balancers"].([]interface{}); len(ilbs) > 0 {
+		internalLoadBalancers, err := expandDnsRecordSetHealthCheckedTargetsInternalLoadBalancers(ilbs, d, config)
+		if err != nil {
+			return nil, err
+		}
+		return &dns.RRSetRoutingPolicyHealthCheckTargets{
+			InternalLoadBalancers: internalLoadBalancers,
+		}, nil
 	}
-	return &dns.RRSetRoutingPolicyHealthCheckTargets{
-		InternalLoadBalancers: internalLoadBalancers,
-	}, nil
+
+	if endpoints := data["external_endpoints"].([]interface{}); len(endpoints) > 0 {
+		return &dns.RRSetRoutingPolicyHealthCheckTargets{
+			ExternalEndpoints: tpgresource.ConvertStringArr(endpoints),
+		}, nil
+	}
+	return nil, fmt.Errorf("specify internal load balancers or external endpoints")
 }
 
 func expandDnsRecordSetHealthCheckedTargetsInternalLoadBalancers(configured []interface{}, d tpgresource.TerraformResourceData, config *transport_tpg.Config) ([]*dns.RRSetRoutingPolicyLoadBalancerTarget, error) {
@@ -785,7 +891,7 @@ func expandDnsRecordSetHealthCheckedTargetsInternalLoadBalancerNetworkUrl(v inte
 	} else if strings.HasPrefix(v.(string), "https://") {
 		return v, nil
 	}
-	url, err := tpgresource.ReplaceVars(d, config, "{{ComputeBasePath}}"+v.(string))
+	url, err := tpgresource.ReplaceVars(d, config, transport_tpg.BaseUrl(compute.Product, config)+v.(string))
 	if err != nil {
 		return "", err
 	}
@@ -837,6 +943,7 @@ func flattenDnsRecordSetRoutingPolicy(policy *dns.RRSetRoutingPolicy) []interfac
 	if policy.PrimaryBackup != nil {
 		p["primary_backup"] = flattenDnsRecordSetRoutingPolicyPrimaryBackup(policy.PrimaryBackup)
 	}
+	p["health_check"] = policy.HealthCheck
 	return append(ps, p)
 }
 
@@ -871,6 +978,7 @@ func flattenDnsRecordSetHealthCheckedTargets(targets *dns.RRSetRoutingPolicyHeal
 
 	data := map[string]interface{}{
 		"internal_load_balancers": flattenDnsRecordSetInternalLoadBalancers(targets.InternalLoadBalancers),
+		"external_endpoints":      targets.ExternalEndpoints,
 	}
 
 	return []map[string]interface{}{data}
@@ -921,4 +1029,13 @@ func validateRecordNameTrailingDot(v interface{}, k string) (warnings []string, 
 		return nil, errors
 	}
 	return nil, nil
+}
+
+func init() {
+	registry.Schema{
+		Name:        "google_dns_record_set",
+		ProductName: "dns",
+		Type:        registry.SchemaTypeResource,
+		Schema:      ResourceDnsRecordSet(),
+	}.Register()
 }

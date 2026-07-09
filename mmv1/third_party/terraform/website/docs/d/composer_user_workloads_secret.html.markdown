@@ -1,16 +1,20 @@
 ---
-subcategory: "Cloud Composer"
+subcategory: "Managed Service for Apache Airflow"
 description: |-
   User workloads Secret used by Airflow tasks that run with Kubernetes Executor or KubernetesPodOperator.
 ---
 
-# google\_composer\_user\_workloads\_secret
+# google_composer_user_workloads_secret
 
-Provides access to Kubernetes Secret configuration for a given project, region and Composer Environment.
+Provides access to Kubernetes Secret configuration for a given project, region
+and Managed Airflow Environment.
 
-~> **Warning:** This data source is in beta, and should be used with the terraform-provider-google-beta provider.
-See [Provider Versions](https://terraform.io/docs/providers/google/guides/provider_versions.html) for more details on beta resources.
+To get more information about Managed Airflow User Workloads Secrets, see:
 
+* [API documentation](https://cloud.google.com/composer/docs/reference/rest/v1/projects.locations.environments.userWorkloadsSecrets)
+* How-to Guides
+    * [Official Documentation](https://clouddocs.devsite.corp.google.com/composer/docs/composer-3/use-kubernetes-pod-operator#secret-config)
+    
 ## Example Usage
 
 ```hcl

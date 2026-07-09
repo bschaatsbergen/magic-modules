@@ -1,4 +1,5 @@
 name: unit-test-tpg
+
 permissions: read-all
 
 on:
@@ -15,7 +16,7 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Download built artifacts
-        uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3.0.2
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: artifact-${{ inputs.repo }}
           path: artifacts
@@ -26,9 +27,14 @@ jobs:
           rm artifacts/output.zip
 
       - name: Set up Go
-        uses: actions/setup-go@0c52d547c9bc32b1aa3301fd7a9cb496313a4491 # v5.0.0
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: '^1.21'
+          go-version: '^1.26'
+
+      - name: Get dependencies
+        run: |
+          go mod download
+
 
       - name: Build Provider
         run: |

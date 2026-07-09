@@ -1,13 +1,17 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"text/template"
+
+	"strconv"
 
 	"github.com/spf13/cobra"
 
@@ -21,19 +25,15 @@ import (
 )
 
 var (
-	//go:embed test_terraform_vcr_test_analytics.tmpl
-	testsAnalyticsTmplText string
-	//go:embed test_terraform_vcr_non_exercised_tests.tmpl
-	nonExercisedTestsTmplText string
-	//go:embed test_terraform_vcr_with_replay_failed_tests.tmpl
-	withReplayFailedTestsTmplText string
-	//go:embed test_terraform_vcr_without_replay_failed_tests.tmpl
-	withoutReplayFailedTestsTmplText string
-	//go:embed test_terraform_vcr_record_replay.tmpl
+	//go:embed templates/vcr/post_replay.tmpl
+	postReplayTmplText string
+	//go:embed templates/vcr/record_replay.tmpl
 	recordReplayTmplText string
+	//go:embed templates/vcr/record_replay_rows.tmpl
+	recordReplayRowsTmplText string
 )
 
-var ttvEnvironmentVariables = [...]string{
+var ttvRequiredEnvironmentVariables = [...]string{
 	"GOCACHE",
 	"GOPATH",
 	"GOOGLE_BILLING_ACCOUNT",
@@ -55,49 +55,84 @@ var ttvEnvironmentVariables = [...]string{
 	"USER",
 }
 
-type analytics struct {
-	ReplayingResult  *vcr.Result
+var ttvOptionalEnvironmentVariables = [...]string{
+	"GOOGLE_CHRONICLE_INSTANCE_ID",
+	"GOOGLE_VMWAREENGINE_PROJECT",
+}
+
+type postReplay struct {
 	RunFullVCR       bool
 	AffectedServices []string
+	NotRunBetaTests  []string
+	NotRunGATests    []string
+	ReplayingResult  vcr.Result
+	ReplayingErr     error
+	LogBucket        string
+	Version          string
+	Head             string
+	BuildID          string
+	BuildStepUrl     string
 }
 
-type nonExercisedTests struct {
-	NotRunBetaTests []string
-	NotRunGATests   []string
-}
-
-type withReplayFailedTests struct {
-	ReplayingResult *vcr.Result
-}
-
-type withoutReplayFailedTests struct {
-	ReplayingErr error
-	PRNumber     string
-	BuildID      string
+type VCRTestTableRow struct {
+	DisplayName                     string
+	RecordingStatus                 string
+	ReplayingAfterRecordingStatus   string
+	RecordingErrorUrl               string
+	RecordingLogUrl                 string
+	ReplayingAfterRecordingErrorUrl string
+	ReplayingAfterRecordingLogUrl   string
 }
 
 type recordReplay struct {
-	RecordingResult               *vcr.Result
-	ReplayingAfterRecordingResult *vcr.Result
+	TestRows                      []VCRTestTableRow
+	RecordingResult               vcr.Result
+	ReplayingAfterRecordingResult vcr.Result
 	HasTerminatedTests            bool
 	RecordingErr                  error
 	AllRecordingPassed            bool
-	PRNumber                      string
+	LogBucket                     string
+	Version                       string
+	Head                          string
 	BuildID                       string
+	BuildStepUrl                  string
+	LogBaseUrl                    string
+	BrowseLogBaseUrl              string
+	NotRunBetaTests               []string
+	NotRunGATests                 []string
 }
 
 var testTerraformVCRCmd = &cobra.Command{
 	Use:   "test-terraform-vcr",
 	Short: "Run vcr tests for affected packages",
-	Long:  `This command runs on new pull requests to replay VCR cassettes and re-record failing cassettes.`,
+	Long: `This command runs on new pull requests to replay VCR cassettes and re-record failing cassettes.
+
+It expects the following arguments:
+	1. PR number
+	2. SHA of the latest magic-modules commit
+	3. Build ID
+	4. Project ID where Cloud Builds are located
+	5. Build step number
+	6. Enable async upload cassettes
+
+The following environment variables are required:
+` + listTTVRequiredEnvironmentVariables(),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		env := make(map[string]string, len(ttvEnvironmentVariables))
-		for _, ev := range ttvEnvironmentVariables {
+		env := make(map[string]string)
+		for _, ev := range ttvRequiredEnvironmentVariables {
 			val, ok := os.LookupEnv(ev)
 			if !ok {
 				return fmt.Errorf("did not provide %s environment variable", ev)
 			}
 			env[ev] = val
+		}
+		for _, ev := range ttvOptionalEnvironmentVariables {
+			val, ok := os.LookupEnv(ev)
+			if ok {
+				env[ev] = val
+			} else {
+				fmt.Printf("🟡 Did not provide %s environment variable\n", ev)
+			}
 		}
 
 		for _, tokenName := range []string{"GITHUB_TOKEN_DOWNSTREAMS", "GITHUB_TOKEN_MAGIC_MODULES"} {
@@ -120,20 +155,32 @@ var testTerraformVCRCmd = &cobra.Command{
 		}
 		ctlr := source.NewController(env["GOPATH"], "modular-magician", env["GITHUB_TOKEN_DOWNSTREAMS"], rnr)
 
-		vt, err := vcr.NewTester(env, rnr)
+		if len(args) < 5 {
+			return fmt.Errorf("wrong number of arguments %d, expected >=5", len(args))
+		}
+		enableAsyncUploadCassettes := false
+		if len(args) > 5 {
+			enableAsyncUploadCassettes = strings.ToLower(args[5]) == "true"
+		}
+
+		vt, err := vcr.NewTester(env, "ci-vcr-cassettes", "ci-vcr-logs", rnr, enableAsyncUploadCassettes)
 		if err != nil {
 			return fmt.Errorf("error creating VCR tester: %w", err)
 		}
 
-		if len(args) != 5 {
-			return fmt.Errorf("wrong number of arguments %d, expected 5", len(args))
-		}
-
-		return execTestTerraformVCR(args[0], args[1], args[2], args[3], args[4], baseBranch, gh, rnr, ctlr, vt)
+		return execTestTerraformVCR(args[0], args[1], args[2], args[3], args[4], baseBranch, "/workspace", gh, rnr, ctlr, vt)
 	},
 }
 
-func execTestTerraformVCR(prNumber, mmCommitSha, buildID, projectID, buildStep, baseBranch string, gh GithubClient, rnr ExecRunner, ctlr *source.Controller, vt *vcr.Tester) error {
+func listTTVRequiredEnvironmentVariables() string {
+	var result string
+	for i, ev := range ttvRequiredEnvironmentVariables {
+		result += fmt.Sprintf("\t%2d. %s\n", i+1, ev)
+	}
+	return result
+}
+
+func execTestTerraformVCR(prNumber, mmCommitSha, buildID, projectID, buildStep, baseBranch, workspace string, gh GithubClient, rnr ExecRunner, ctlr *source.Controller, vt *vcr.Tester) error {
 	newBranch := "auto-pr-" + prNumber
 	oldBranch := newBranch + "-old"
 
@@ -173,35 +220,46 @@ func execTestTerraformVCR(prNumber, mmCommitSha, buildID, projectID, buildStep, 
 		return fmt.Errorf("error changing to tpgbRepo dir: %w", err)
 	}
 
-	services, runFullVCR := modifiedPackages(tpgbRepo.ChangedFiles)
+	services, runFullVCR := modifiedPackages(tpgbRepo.ChangedFiles, provider.Beta)
 	if len(services) == 0 && !runFullVCR {
 		fmt.Println("Skipping tests: No go files or test fixtures changed")
 		return nil
 	}
 	fmt.Println("Running tests: Go files or test fixtures changed")
 
-	if err := vt.FetchCassettes(provider.Beta, baseBranch, prNumber); err != nil {
+	if err := vt.FetchCassettes(provider.Beta, baseBranch, newBranch); err != nil {
 		return fmt.Errorf("error fetching cassettes: %w", err)
 	}
 
-	buildStatusTargetURL := fmt.Sprintf("https://console.cloud.google.com/cloud-build/builds;region=global/%s;step=%s?project=%s", buildID, buildStep, projectID)
-	if err := gh.PostBuildStatus(prNumber, "VCR-test", "pending", buildStatusTargetURL, mmCommitSha); err != nil {
+	buildStepUrl := fmt.Sprintf("https://console.cloud.google.com/cloud-build/builds;region=global/%s;step=%s?project=%s", buildID, buildStep, projectID)
+	if err := gh.PostBuildStatus(prNumber, "VCR-test", "pending", buildStepUrl, mmCommitSha); err != nil {
 		return fmt.Errorf("error posting pending status: %w", err)
 	}
 
-	replayingResult, testDirs, replayingErr := runReplaying(runFullVCR, services, vt)
+	replayingResult, testDirs, replayingErr := runReplaying(runFullVCR, provider.Beta, services, vt)
 	testState := "success"
 	if replayingErr != nil {
 		testState = "failure"
 	}
 
-	if err := vt.UploadLogs("ci-vcr-logs", prNumber, buildID, false, false, vcr.Replaying, provider.Beta); err != nil {
+	if err := vt.UploadLogs(vcr.UploadLogsOptions{
+		Head:    newBranch,
+		BuildID: buildID,
+		Mode:    vcr.Replaying,
+		Version: provider.Beta,
+	}); err != nil {
 		return fmt.Errorf("error uploading replaying logs: %w", err)
 	}
 
-	if hasPanics, err := handlePanics(prNumber, buildID, buildStatusTargetURL, mmCommitSha, replayingResult, vcr.Replaying, gh); err != nil {
+	if hasPanics, err := handlePanics(prNumber, buildID, buildStepUrl, mmCommitSha, workspace, replayingResult, vcr.Replaying, gh, rnr); err != nil {
 		return fmt.Errorf("error handling panics: %w", err)
 	} else if hasPanics {
+		return nil
+	}
+
+	if hasBuildFailures, err := handleBuildFailures(prNumber, buildID, buildStepUrl, mmCommitSha, workspace, replayingResult, vcr.Replaying, gh, rnr); err != nil {
+		return fmt.Errorf("error handling build failures: %w", err)
+	} else if hasBuildFailures {
 		return nil
 	}
 
@@ -209,121 +267,153 @@ func execTestTerraformVCR(prNumber, mmCommitSha, buildID, projectID, buildStep, 
 	for s := range services {
 		servicesArr = append(servicesArr, s)
 	}
-	analyticsData := analytics{
-		ReplayingResult:  replayingResult,
-		RunFullVCR:       runFullVCR,
-		AffectedServices: sort.StringSlice(servicesArr),
-	}
-	testsAnalyticsComment, err := formatTestsAnalytics(analyticsData)
-	if err != nil {
-		return fmt.Errorf("error formatting test_analytics comment: %w", err)
-	}
 
 	notRunBeta, notRunGa := notRunTests(tpgRepo.UnifiedZeroDiff, tpgbRepo.UnifiedZeroDiff, replayingResult)
-
-	nonExercisedTestsData := nonExercisedTests{
-		NotRunBetaTests: notRunBeta,
-		NotRunGATests:   notRunGa,
+	postReplayData := postReplay{
+		RunFullVCR:       runFullVCR,
+		AffectedServices: sort.StringSlice(servicesArr),
+		NotRunBetaTests:  notRunBeta,
+		NotRunGATests:    notRunGa,
+		ReplayingResult:  subtestResult(replayingResult),
+		ReplayingErr:     replayingErr,
+		LogBucket:        "ci-vcr-logs",
+		Version:          provider.Beta.String(),
+		Head:             newBranch,
+		BuildID:          buildID,
+		BuildStepUrl:     buildStepUrl,
 	}
-	nonExercisedTestsComment, err := formatNonExercisedTests(nonExercisedTestsData)
+
+	comment, err := formatPostReplay(postReplayData, os.Stdout)
 	if err != nil {
-		return fmt.Errorf("error formatting non exercised tests comment: %w", err)
+		return fmt.Errorf("error formatting post replay comment: %w", err)
 	}
-
+	if len(replayingResult.FailedTests) == 0 {
+		mentionStr := getMentions(prNumber, gh)
+		if mentionStr != "" {
+			comment = fmt.Sprintf("%s\n\n%s VCR tests complete for %s!", comment, mentionStr, mmCommitSha)
+		}
+	}
+	if err := appendVCRResultToDiffComment(prNumber, comment, workspace, gh, rnr); err != nil {
+		return fmt.Errorf("error appending comment: %w", err)
+	}
 	if len(replayingResult.FailedTests) > 0 {
-		withReplayFailedTestsData := withReplayFailedTests{
-			ReplayingResult: replayingResult,
-		}
-		withReplayFailedTestsComment, err := formatWithReplayFailedTests(withReplayFailedTestsData)
-		if err != nil {
-			return fmt.Errorf("error formatting action taken comment: %w", err)
-		}
-
-		comment := strings.Join([]string{testsAnalyticsComment, nonExercisedTestsComment, withReplayFailedTestsComment}, "\n")
-		if err := gh.PostComment(prNumber, comment); err != nil {
-			return fmt.Errorf("error posting comment: %w", err)
-		}
-
-		recordingResult, recordingErr := vt.RunParallel(vcr.Recording, provider.Beta, testDirs, replayingResult.FailedTests)
+		recordingResult, recordingErr := vt.RunParallel(vcr.RunOptions{
+			Mode:             vcr.Recording,
+			Version:          provider.Beta,
+			TestDirs:         testDirs,
+			Tests:            replayingResult.FailedTests,
+			UploadBranchName: newBranch,
+		})
 		if recordingErr != nil {
 			testState = "failure"
 		} else {
 			testState = "success"
 		}
 
-		if err := vt.UploadCassettes("ci-vcr-cassettes", prNumber, provider.Beta); err != nil {
+		if err := vt.UploadCassettes(newBranch, provider.Beta); err != nil {
 			return fmt.Errorf("error uploading cassettes: %w", err)
 		}
 
-		if err := vt.UploadLogs("ci-vcr-logs", prNumber, buildID, true, false, vcr.Recording, provider.Beta); err != nil {
+		if err := vt.UploadLogs(vcr.UploadLogsOptions{
+			Head:     newBranch,
+			BuildID:  buildID,
+			Parallel: true,
+			Mode:     vcr.Recording,
+			Version:  provider.Beta,
+		}); err != nil {
 			return fmt.Errorf("error uploading recording logs: %w", err)
 		}
 
-		if hasPanics, err := handlePanics(prNumber, buildID, buildStatusTargetURL, mmCommitSha, recordingResult, vcr.Recording, gh); err != nil {
+		if hasPanics, err := handlePanics(prNumber, buildID, buildStepUrl, mmCommitSha, workspace, recordingResult, vcr.Recording, gh, rnr); err != nil {
 			return fmt.Errorf("error handling panics: %w", err)
 		} else if hasPanics {
 			return nil
 		}
 
-		var replayingAfterRecordingResult *vcr.Result
+		if hasBuildFailures, err := handleBuildFailures(prNumber, buildID, buildStepUrl, mmCommitSha, workspace, recordingResult, vcr.Recording, gh, rnr); err != nil {
+			return fmt.Errorf("error handling build failures: %w", err)
+		} else if hasBuildFailures {
+			return nil
+		}
+
+		replayingAfterRecordingResult := vcr.Result{}
 		var replayingAfterRecordingErr error
 		if len(recordingResult.PassedTests) > 0 {
-			replayingAfterRecordingResult, replayingAfterRecordingErr = vt.RunParallel(vcr.Replaying, provider.Beta, testDirs, recordingResult.PassedTests)
+			replayingAfterRecordingResult, replayingAfterRecordingErr = vt.RunParallel(vcr.RunOptions{
+				Mode:     vcr.Replaying,
+				Version:  provider.Beta,
+				TestDirs: testDirs,
+				Tests:    recordingResult.PassedTests,
+			})
 			if replayingAfterRecordingErr != nil {
 				testState = "failure"
 			}
 
-			if err := vt.UploadLogs("ci-vcr-logs", prNumber, buildID, true, true, vcr.Replaying, provider.Beta); err != nil {
+			if err := vt.UploadLogs(vcr.UploadLogsOptions{
+				Head:           newBranch,
+				BuildID:        buildID,
+				AfterRecording: true,
+				Parallel:       true,
+				Mode:           vcr.Replaying,
+				Version:        provider.Beta,
+			}); err != nil {
 				return fmt.Errorf("error uploading recording logs: %w", err)
 			}
+
 		}
 
 		hasTerminatedTests := (len(recordingResult.PassedTests) + len(recordingResult.FailedTests)) < len(replayingResult.FailedTests)
 		allRecordingPassed := len(recordingResult.FailedTests) == 0 && !hasTerminatedTests && recordingErr == nil
 
+		// Expand compound tests to subtests for accurate status matching
+		expandedRecordingResult := subtestResult(recordingResult)
+		expandedReplayingAfterRecordingResult := subtestResult(replayingAfterRecordingResult)
+
+		logBasePath := fmt.Sprintf("ci-vcr-logs/%s/refs/heads/%s/artifacts/%s", provider.Beta.String(), newBranch, buildID)
+		if buildID == "" {
+			logBasePath = fmt.Sprintf("ci-vcr-logs/%s/refs/heads/%s", provider.Beta.String(), newBranch)
+		}
+		logBaseUrl := fmt.Sprintf("https://storage.cloud.google.com/%s", logBasePath)
+
+		testRows := buildVCRTestRows(replayingResult, recordingResult, replayingAfterRecordingResult, logBaseUrl)
+
 		recordReplayData := recordReplay{
-			RecordingResult:               recordingResult,
-			ReplayingAfterRecordingResult: replayingAfterRecordingResult,
+			TestRows:                      testRows,
+			RecordingResult:               expandedRecordingResult,
+			ReplayingAfterRecordingResult: expandedReplayingAfterRecordingResult,
 			RecordingErr:                  recordingErr,
 			HasTerminatedTests:            hasTerminatedTests,
 			AllRecordingPassed:            allRecordingPassed,
-			PRNumber:                      prNumber,
+			LogBucket:                     "ci-vcr-logs",
+			Version:                       provider.Beta.String(),
+			Head:                          newBranch,
 			BuildID:                       buildID,
+			BuildStepUrl:                  buildStepUrl,
+			NotRunBetaTests:               notRunBeta,
+			NotRunGATests:                 notRunGa,
 		}
-		recordReplayComment, err := formatRecordReplay(recordReplayData)
+		recordReplayComment, err := formatRecordReplay(recordReplayData, os.Stdout)
 		if err != nil {
 			return fmt.Errorf("error formatting record replay comment: %w", err)
 		}
-		if err := gh.PostComment(prNumber, recordReplayComment); err != nil {
-			return fmt.Errorf("error posting comment: %w", err)
+		mentionStr := getMentions(prNumber, gh)
+		if mentionStr != "" {
+			recordReplayComment = fmt.Sprintf("%s\n\n%s VCR tests complete for %s!", recordReplayComment, mentionStr, mmCommitSha)
 		}
-
-	} else { //  len(replayingResult.FailedTests) == 0
-		withoutReplayFailedTestsData := withoutReplayFailedTests{
-			ReplayingErr: replayingErr,
-			PRNumber:     prNumber,
-			BuildID:      buildID,
-		}
-		withoutReplayFailedTestsComment, err := formatWithoutReplayFailedTests(withoutReplayFailedTestsData)
-		if err != nil {
-			return fmt.Errorf("error formatting action taken comment: %w", err)
-		}
-
-		comment := strings.Join([]string{testsAnalyticsComment, nonExercisedTestsComment, withoutReplayFailedTestsComment}, "\n")
-		if err := gh.PostComment(prNumber, comment); err != nil {
-			return fmt.Errorf("error posting comment: %w", err)
+		if err := appendVCRResultToDiffComment(prNumber, recordReplayComment, workspace, gh, rnr); err != nil {
+			return fmt.Errorf("error appending comment: %w", err)
 		}
 	}
 
-	if err := gh.PostBuildStatus(prNumber, "VCR-test", testState, buildStatusTargetURL, mmCommitSha); err != nil {
+	if err := gh.PostBuildStatus(prNumber, "VCR-test", testState, buildStepUrl, mmCommitSha); err != nil {
 		return fmt.Errorf("error posting build status: %w", err)
 	}
 	return nil
 }
 
-var addedTestsRegexp = regexp.MustCompile(`(?m)^\+func (Test\w+)\(t \*testing.T\) {`)
+var addedTestsRegexp = regexp.MustCompile(`(?m)^\+func (TestAcc\w+)\(t \*testing.T\) {`)
 
-func notRunTests(gaDiff, betaDiff string, result *vcr.Result) ([]string, []string) {
+func notRunTests(gaDiff, betaDiff string, result vcr.Result) ([]string, []string) {
 	fmt.Println("Checking for new acceptance tests that were not run")
 	addedGaTests := addedTestsRegexp.FindAllStringSubmatch(gaDiff, -1)
 	addedBetaTests := addedTestsRegexp.FindAllStringSubmatch(betaDiff, -1)
@@ -364,7 +454,45 @@ func notRunTests(gaDiff, betaDiff string, result *vcr.Result) ([]string, []strin
 	return notRunBeta, notRunGa
 }
 
-func modifiedPackages(changedFiles []string) (map[string]struct{}, bool) {
+func subtestResult(original vcr.Result) vcr.Result {
+	return vcr.Result{
+		PassedTests:   excludeCompoundTests(original.PassedTests, original.PassedSubtests),
+		FailedTests:   excludeCompoundTests(original.FailedTests, original.FailedSubtests),
+		SkippedTests:  excludeCompoundTests(original.SkippedTests, original.SkippedSubtests),
+		Panics:        original.Panics,
+		BuildFailures: original.BuildFailures,
+	}
+}
+
+// Returns the name of the compound test that the given subtest belongs to.
+func compoundTest(subtest string) string {
+	parts := strings.Split(subtest, "__")
+	if len(parts) != 2 {
+		return subtest
+	}
+	return parts[0]
+}
+
+// Returns subtests and tests that are not compound tests.
+func excludeCompoundTests(allTests, subtests []string) []string {
+	res := make([]string, 0, len(allTests)+len(subtests))
+	compoundTests := make(map[string]struct{}, len(subtests))
+	for _, subtest := range subtests {
+		if compound := compoundTest(subtest); compound != subtest {
+			compoundTests[compound] = struct{}{}
+			res = append(res, subtest)
+		}
+	}
+	for _, test := range allTests {
+		if _, ok := compoundTests[test]; !ok {
+			res = append(res, test)
+		}
+	}
+	sort.Strings(res)
+	return res
+}
+
+func modifiedPackages(changedFiles []string, version provider.Version) (map[string]struct{}, bool) {
 	var goFiles []string
 	for _, line := range changedFiles {
 		if strings.HasSuffix(line, ".go") || strings.Contains(line, "test-fixtures") || strings.HasSuffix(line, "go.mod") || strings.HasSuffix(line, "go.sum") {
@@ -374,10 +502,10 @@ func modifiedPackages(changedFiles []string) (map[string]struct{}, bool) {
 	services := make(map[string]struct{})
 	runFullVCR := false
 	for _, file := range goFiles {
-		if strings.HasPrefix(file, "google-beta/services/") {
+		if strings.HasPrefix(file, version.ProviderName()+"/services/") {
 			fileParts := strings.Split(file, "/")
 			services[fileParts[2]] = struct{}{}
-		} else if file == "google-beta/provider/provider_mmv1_resources.go" || file == "google-beta/provider/provider_dcl_resources.go" {
+		} else if file == version.ProviderName()+"/provider/provider_mmv1_resources.go" || file == version.ProviderName()+"/provider/provider_dcl_resources.go" {
 			fmt.Println("ignore changes in ", file)
 		} else {
 			fmt.Println("run full tests ", file)
@@ -388,42 +516,69 @@ func modifiedPackages(changedFiles []string) (map[string]struct{}, bool) {
 	return services, runFullVCR
 }
 
-func runReplaying(runFullVCR bool, services map[string]struct{}, vt *vcr.Tester) (*vcr.Result, []string, error) {
-	var result *vcr.Result
+func runReplaying(runFullVCR bool, version provider.Version, services map[string]struct{}, vt *vcr.Tester) (vcr.Result, []string, error) {
+	result := vcr.Result{}
 	var testDirs []string
 	var replayingErr error
 	if runFullVCR {
-		fmt.Println("run full VCR tests")
-		result, replayingErr = vt.Run(vcr.Replaying, provider.Beta, nil)
+		fmt.Println("runReplaying: full VCR tests")
+		result, replayingErr = vt.Run(vcr.RunOptions{
+			Mode:    vcr.Replaying,
+			Version: version,
+		})
 	} else if len(services) > 0 {
-		result = &vcr.Result{}
+		fmt.Printf("runReplaying: %d specific services: %v\n", len(services), services)
 		for service := range services {
-			servicePath := "./" + filepath.Join("google-beta", "services", service)
+			servicePath := "./" + filepath.Join(version.ProviderName(), "services", service)
 			testDirs = append(testDirs, servicePath)
-			fmt.Println("run VCR tests in ", service)
-			serviceResult, serviceReplayingErr := vt.Run(vcr.Replaying, provider.Beta, []string{servicePath})
-			if serviceReplayingErr != nil {
-				replayingErr = serviceReplayingErr
-			}
-			result.PassedTests = append(result.PassedTests, serviceResult.PassedTests...)
-			result.SkippedTests = append(result.SkippedTests, serviceResult.SkippedTests...)
-			result.FailedTests = append(result.FailedTests, serviceResult.FailedTests...)
-			result.Panics = append(result.Panics, serviceResult.Panics...)
 		}
+
+		fmt.Printf("run VCR tests in %v\n", testDirs)
+		serviceResult, serviceReplayingErr := vt.Run(vcr.RunOptions{
+			Mode:     vcr.Replaying,
+			Version:  version,
+			TestDirs: testDirs,
+		})
+
+		replayingErr = errors.Join(replayingErr, serviceReplayingErr)
+		result.PassedTests = append(result.PassedTests, serviceResult.PassedTests...)
+		result.SkippedTests = append(result.SkippedTests, serviceResult.SkippedTests...)
+		result.FailedTests = append(result.FailedTests, serviceResult.FailedTests...)
+		result.Panics = append(result.Panics, serviceResult.Panics...)
+		result.BuildFailures = append(result.BuildFailures, serviceResult.BuildFailures...)
+	} else {
+		fmt.Println("runReplaying: no impacted services")
 	}
 
 	return result, testDirs, replayingErr
 }
 
-func handlePanics(prNumber, buildID, buildStatusTargetURL, mmCommitSha string, result *vcr.Result, mode vcr.Mode, gh GithubClient) (bool, error) {
+func handlePanics(prNumber, buildID, buildStepUrl, mmCommitSha, workspace string, result vcr.Result, mode vcr.Mode, gh GithubClient, rnr ExecRunner) (bool, error) {
 	if len(result.Panics) > 0 {
-		comment := fmt.Sprintf(`$\textcolor{red}{\textsf{The provider crashed while running the VCR tests in %s mode}}$
-$\textcolor{red}{\textsf{Please fix it to complete your PR}}$
-View the [build log](https://storage.cloud.google.com/ci-vcr-logs/beta/refs/heads/auto-pr-%s/artifacts/%s/build-log/%s_test.log)`, mode.Upper(), prNumber, buildID, mode.Lower())
-		if err := gh.PostComment(prNumber, comment); err != nil {
-			return true, fmt.Errorf("error posting comment: %v", err)
+		comment := "> [!CAUTION]\n"
+		comment += "> **Panic occurred during VCR tests**\n>\n"
+		comment += fmt.Sprintf("> %s\n", color("red", fmt.Sprintf("**%s mode**: The provider crashed with a panic. Please check the build log for details.", mode.Upper())))
+		comment += ">\n> Please fix the issue to complete your PR."
+
+		comment += fmt.Sprintf("\n\nView the [build log](https://storage.cloud.google.com/ci-vcr-logs/beta/refs/heads/auto-pr-%s/artifacts/%s/build-log/%s_test.log)", prNumber, buildID, mode.Lower())
+
+		mentionStr := getMentions(prNumber, gh)
+		if mentionStr != "" {
+			comment = fmt.Sprintf("%s\n\n%s VCR tests complete for %s!", comment, mentionStr, mmCommitSha)
 		}
-		if err := gh.PostBuildStatus(prNumber, "VCR-test", "failure", buildStatusTargetURL, mmCommitSha); err != nil {
+
+		header := ""
+		if mode == vcr.Recording {
+			header = "---\n\n**Step 2: Recording Mode**\n\n"
+		} else if mode == vcr.Replaying {
+			header = "**Step 1: Replaying Mode**\n\n"
+		}
+		comment = header + comment
+
+		if err := appendVCRResultToDiffComment(prNumber, comment, workspace, gh, rnr); err != nil {
+			return true, fmt.Errorf("error appending comment: %v", err)
+		}
+		if err := gh.PostBuildStatus(prNumber, "VCR-test", "failure", buildStepUrl, mmCommitSha); err != nil {
 			return true, fmt.Errorf("error posting failure status: %v", err)
 		}
 		return true, nil
@@ -431,43 +586,263 @@ View the [build log](https://storage.cloud.google.com/ci-vcr-logs/beta/refs/head
 	return false, nil
 }
 
+func handleBuildFailures(prNumber, buildID, buildStepUrl, mmCommitSha, workspace string, result vcr.Result, mode vcr.Mode, gh GithubClient, rnr ExecRunner) (bool, error) {
+	if len(result.BuildFailures) > 0 {
+		comment := "> [!CAUTION]\n"
+		comment += "> **Build Failure during VCR tests**\n>\n"
+		comment += fmt.Sprintf("> %s\n", color("red", fmt.Sprintf("**%s mode**: The following packages failed to build:", mode.Upper())))
+		for _, pkg := range result.BuildFailures {
+			comment += fmt.Sprintf("> - `%s`\n", pkg)
+		}
+		comment += ">\n> Please fix the compilation errors to complete your PR."
+
+		comment += fmt.Sprintf("\n\nView the [build log](https://storage.cloud.google.com/ci-vcr-logs/beta/refs/heads/auto-pr-%s/artifacts/%s/build-log/%s_test.log)", prNumber, buildID, mode.Lower())
+
+		mentionStr := getMentions(prNumber, gh)
+		if mentionStr != "" {
+			comment = fmt.Sprintf("%s\n\n%s VCR tests complete for %s!", comment, mentionStr, mmCommitSha)
+		}
+
+		header := ""
+		if mode == vcr.Recording {
+			header = "---\n\n**Step 2: Recording Mode**\n\n"
+		} else if mode == vcr.Replaying {
+			header = "**Step 1: Replaying Mode**\n\n"
+		}
+		comment = header + comment
+
+		if err := appendVCRResultToDiffComment(prNumber, comment, workspace, gh, rnr); err != nil {
+			return true, fmt.Errorf("error appending comment: %v", err)
+		}
+		if err := gh.PostBuildStatus(prNumber, "VCR-test", "failure", buildStepUrl, mmCommitSha); err != nil {
+			return true, fmt.Errorf("error posting failure status: %v", err)
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+func getMentions(prNumber string, gh GithubClient) string {
+	author := ""
+	reviewerMentions := ""
+	if authorName, err := gh.GetPullRequestAuthor(prNumber); err == nil {
+		author = "@" + authorName
+	}
+	if reviewers, err := gh.GetPullRequestRequestedReviewers(prNumber); err == nil {
+		var mentions []string
+		for _, r := range reviewers {
+			mentions = append(mentions, "@"+r.Login)
+		}
+		if len(mentions) > 0 {
+			reviewerMentions = strings.Join(mentions, ", ")
+		}
+	}
+
+	mentionStr := ""
+	if author != "" {
+		mentionStr += author
+	}
+	if reviewerMentions != "" {
+		if mentionStr != "" {
+			mentionStr += ", "
+		}
+		mentionStr += reviewerMentions
+	}
+	return mentionStr
+}
+
+// appendVCRResultToDiffComment appends content to the existing diff report comment
+// identified by the ID in /workspace/diff_comment_id.txt.
+// If the file is missing or the comment cannot be fetched, it falls back to posting a new comment.
+func appendVCRResultToDiffComment(prNumber string, content string, workspace string, gh GithubClient, rnr ExecRunner) error {
+	var diffComment *github.PullRequestComment
+
+	if workspace == "" {
+		workspace = "/workspace"
+	}
+
+	// Try to find by ID from file
+	if idStr, err := rnr.ReadFile(filepath.Join(workspace, "diff_comment_id.txt")); err == nil {
+		if id, err := strconv.Atoi(strings.TrimSpace(idStr)); err == nil {
+			if comment, err := gh.GetPullRequestComment(id); err == nil {
+				diffComment = &comment
+			} else {
+				fmt.Printf("Warning: failed to fetch comment %d by ID: %v\n", id, err)
+			}
+		}
+	}
+
+	if diffComment != nil {
+		newBody := diffComment.Body + "\n\n" + content
+		return gh.UpdateComment(prNumber, newBody, diffComment.ID)
+	}
+
+	// Fallback to posting a new comment if diff report not found
+	_, err := gh.PostComment(prNumber, content)
+	return err
+}
+
 func init() {
 	rootCmd.AddCommand(testTerraformVCRCmd)
 }
 
-func formatComment(fileName string, tmplText string, data any) (string, error) {
+func parseTemplate(filename string, tmplText string) *template.Template {
 	funcs := template.FuncMap{
-		"join": strings.Join,
-		"add":  func(i, j int) int { return i + j },
+		"join":         strings.Join,
+		"add":          func(i, j int) int { return i + j },
+		"color":        color,
+		"compoundTest": compoundTest,
+		"replace":      strings.ReplaceAll,
+		"symbol":       symbol,
+		"contains":     contains,
 	}
-	tmpl, err := template.New(fileName).Funcs(funcs).Parse(tmplText)
+	tmpl, err := template.New(filename).Funcs(funcs).Parse(tmplText)
 	if err != nil {
-		panic(fmt.Sprintf("Unable to parse %s: %s", fileName, err))
+		panic(fmt.Sprintf("Unable to parse %s: %s", filename, err))
 	}
+	return tmpl
+}
+
+func formatComment(filename string, tmplText string, data any) (string, error) {
+	tmpl := parseTemplate(filename, tmplText)
 	sb := new(strings.Builder)
-	err = tmpl.Execute(sb, data)
+	err := tmpl.Execute(sb, data)
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(sb.String()), nil
 }
 
-func formatTestsAnalytics(data analytics) (string, error) {
-	return formatComment("test_terraform_vcr_test_analytics.tmpl", testsAnalyticsTmplText, data)
+func formatPostReplay(data postReplay, w io.Writer) (string, error) {
+	if len(data.ReplayingResult.FailedTests) > 100 {
+		fmt.Fprintln(w, "Failed replaying tests:")
+		for _, t := range data.ReplayingResult.FailedTests {
+			fmt.Fprintln(w, "* "+t)
+		}
+	}
+	return formatComment("post_replay.tmpl", postReplayTmplText, data)
 }
 
-func formatNonExercisedTests(data nonExercisedTests) (string, error) {
-	return formatComment("test_terraform_vcr_recording_mode_results.tmpl", nonExercisedTestsTmplText, data)
+func formatRecordReplay(data recordReplay, w io.Writer) (string, error) {
+	if len(data.TestRows) > 100 {
+		tmpl := parseTemplate("record_replay_rows.tmpl", recordReplayRowsTmplText+`{{ template "RecordReplayRows" . }}`)
+		sb := new(strings.Builder)
+		err := tmpl.Execute(sb, data)
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintln(w, strings.TrimSpace(sb.String()))
+	}
+	logBasePath := fmt.Sprintf("%s/%s/refs/heads/%s/artifacts/%s", data.LogBucket, data.Version, data.Head, data.BuildID)
+	if data.BuildID == "" {
+		logBasePath = fmt.Sprintf("%s/%s/refs/heads/%s", data.LogBucket, data.Version, data.Head)
+	}
+	data.LogBaseUrl = fmt.Sprintf("https://storage.cloud.google.com/%s", logBasePath)
+	data.BrowseLogBaseUrl = fmt.Sprintf("https://console.cloud.google.com/storage/browser/%s", logBasePath)
+	return formatComment("record_replay.tmpl", recordReplayRowsTmplText+recordReplayTmplText, data)
 }
 
-func formatWithReplayFailedTests(data withReplayFailedTests) (string, error) {
-	return formatComment("test_terraform_vcr_with_replay_failed_tests.tmpl", withReplayFailedTestsTmplText, data)
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
 }
 
-func formatWithoutReplayFailedTests(data withoutReplayFailedTests) (string, error) {
-	return formatComment("test_terraform_vcr_without_replay_failed_tests.tmpl", withoutReplayFailedTestsTmplText, data)
+func createTableRow(t string, logBaseUrl string, recordingResult, replayingResult vcr.Result) VCRTestTableRow {
+	row := VCRTestTableRow{
+		DisplayName: strings.ReplaceAll(t, "__", "/"),
+	}
+
+	if contains(recordingResult.PassedTests, t) {
+		row.RecordingStatus = "Passed"
+		row.RecordingLogUrl = fmt.Sprintf("%s/recording/%s.log", logBaseUrl, t)
+	} else if contains(recordingResult.FailedTests, t) {
+		row.RecordingStatus = "Failed"
+		row.RecordingErrorUrl = fmt.Sprintf("%s/build-log/recording_build/%s_recording_test.log", logBaseUrl, compoundTest(t))
+		row.RecordingLogUrl = fmt.Sprintf("%s/recording/%s.log", logBaseUrl, t)
+	} else {
+		row.RecordingStatus = "Terminated"
+	}
+
+	if contains(replayingResult.PassedTests, t) {
+		row.ReplayingAfterRecordingStatus = "Passed"
+	} else if contains(replayingResult.FailedTests, t) {
+		row.ReplayingAfterRecordingStatus = "Failed"
+		row.ReplayingAfterRecordingErrorUrl = fmt.Sprintf("%s/build-log/replaying_build_after_recording/%s_replaying_test.log", logBaseUrl, compoundTest(t))
+		row.ReplayingAfterRecordingLogUrl = fmt.Sprintf("%s/replaying_after_recording/%s.log", logBaseUrl, t)
+	} else {
+		row.ReplayingAfterRecordingStatus = "-"
+	}
+
+	return row
 }
 
-func formatRecordReplay(data recordReplay) (string, error) {
-	return formatComment("test_terraform_vcr_record_replay.tmpl", recordReplayTmplText, data)
+func buildVCRTestRows(replayingResult, recordingResult, replayingAfterRecordingResult vcr.Result, logBaseUrl string) []VCRTestTableRow {
+	// Expand compound tests to subtests for accurate status matching
+	expandedRecordingResult := subtestResult(recordingResult)
+	expandedReplayingAfterRecordingResult := subtestResult(replayingAfterRecordingResult)
+
+	var attemptedTests []string
+	for _, t := range replayingResult.FailedTests {
+		prefix := t + "__"
+		hasSubtests := false
+		for _, st := range recordingResult.PassedSubtests {
+			if strings.HasPrefix(st, prefix) {
+				attemptedTests = append(attemptedTests, st)
+				hasSubtests = true
+			}
+		}
+		for _, st := range recordingResult.FailedSubtests {
+			if strings.HasPrefix(st, prefix) {
+				attemptedTests = append(attemptedTests, st)
+				hasSubtests = true
+			}
+		}
+		if !hasSubtests {
+			attemptedTests = append(attemptedTests, t)
+		}
+	}
+
+	// Group tests by status to list them in order:
+	// 1. Passed in both Recording and Re-replaying
+	// 2. Passed in Recording but Failing in Re-replaying
+	// 3. Failing in Recording
+	// 4. Terminated
+	var passedInBoth, failingInReplayingAfterRecording, failingInRecording, terminated []string
+
+	for _, t := range attemptedTests {
+		if !contains(expandedRecordingResult.PassedTests, t) && !contains(expandedRecordingResult.FailedTests, t) {
+			terminated = append(terminated, t)
+		} else if contains(expandedRecordingResult.FailedTests, t) {
+			failingInRecording = append(failingInRecording, t)
+		} else if contains(expandedReplayingAfterRecordingResult.FailedTests, t) {
+			failingInReplayingAfterRecording = append(failingInReplayingAfterRecording, t)
+		} else {
+			passedInBoth = append(passedInBoth, t)
+		}
+	}
+
+	sort.Strings(passedInBoth)
+	sort.Strings(failingInReplayingAfterRecording)
+	sort.Strings(failingInRecording)
+	sort.Strings(terminated)
+
+	var testRows []VCRTestTableRow
+	for _, t := range passedInBoth {
+		testRows = append(testRows, createTableRow(t, logBaseUrl, expandedRecordingResult, expandedReplayingAfterRecordingResult))
+	}
+	for _, t := range failingInReplayingAfterRecording {
+		testRows = append(testRows, createTableRow(t, logBaseUrl, expandedRecordingResult, expandedReplayingAfterRecordingResult))
+	}
+	for _, t := range failingInRecording {
+		testRows = append(testRows, createTableRow(t, logBaseUrl, expandedRecordingResult, expandedReplayingAfterRecordingResult))
+	}
+	for _, t := range terminated {
+		testRows = append(testRows, createTableRow(t, logBaseUrl, expandedRecordingResult, expandedReplayingAfterRecordingResult))
+	}
+
+	return testRows
 }

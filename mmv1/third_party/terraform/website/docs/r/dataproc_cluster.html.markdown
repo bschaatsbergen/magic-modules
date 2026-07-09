@@ -45,6 +45,8 @@ resource "google_dataproc_cluster" "mycluster" {
   cluster_config {
     staging_bucket = "dataproc-staging-bucket"
 
+    engine = "DEFAULT"
+
     master_config {
       num_instances = 1
       machine_type  = "e2-medium"
@@ -154,6 +156,14 @@ resource "google_dataproc_cluster" "accelerated_cluster" {
       [Duration](https://developers.google.com/protocol-buffers/docs/proto3#json)).
       Only supported on Dataproc image versions 1.2 and higher.
       For more context see the [docs](https://cloud.google.com/dataproc/docs/reference/rest/v1/projects.regions.clusters/patch#query-parameters)
+
+* `deletion_policy` - (Optional) Whether Terraform will be prevented from destroying the resource. Defaults to "DELETE".
+    When a 'terraform destroy' or 'terraform apply' would delete the resource,
+    the command will fail if this field is set to "PREVENT" in Terraform state.
+    When set to "ABANDON", the command will remove the resource from Terraform
+    management without updating or deleting the resource in the API.
+    When set to "DELETE", deleting the resource is allowed.
+
 - - -
 
 <a name="nested_virtual_cluster_config"></a>The `virtual_cluster_config` block supports:
@@ -214,7 +224,7 @@ resource "google_dataproc_cluster" "accelerated_cluster" {
 
         kubernetes_software_config {
           component_version = {
-            "SPARK" : "3.1-dataproc-7"
+            "SPARK" : "3.5-dataproc-17"
           }
 
           properties = {
@@ -341,6 +351,10 @@ resource "google_dataproc_cluster" "accelerated_cluster" {
    and jobs data, such as Spark and MapReduce history files.
    Note: If you don't explicitly specify a `temp_bucket` then GCP will auto create / assign one for you.
 
+* `cluster_tier` - (Optional) The tier of the cluster.
+
+* `engine` - (Optional) The cluster engine.
+
 * `gce_cluster_config` (Optional) Common config settings for resources of Google Compute Engine cluster
    instances, applicable to all instances in the cluster. Structure [defined below](#nested_gce_cluster_config).
 
@@ -440,6 +454,10 @@ resource "google_dataproc_cluster" "accelerated_cluster" {
 * `metadata` - (Optional) A map of the Compute Engine metadata entries to add to all instances
    (see [Project and instance metadata](https://cloud.google.com/compute/docs/storing-retrieving-metadata#project_and_instance_metadata)).
 
+* `resource_manager_tags` - (Optional) A map of resource manager tags to add to all instances.
+   Keys must be in the format `tagKeys/{tag_key_id}` and values in the format `tagValues/{tag_value_id}`
+   (see [Secure tags](https://cloud.google.com/dataproc/docs/guides/use-secure-tags)).
+
 * `reservation_affinity` - (Optional) Reservation Affinity for consuming zonal reservation.
     * `consume_reservation_type` - (Optional) Corresponds to the type of reservation consumption.
     * `key` - (Optional) Corresponds to the label key of reservation resource.
@@ -447,6 +465,9 @@ resource "google_dataproc_cluster" "accelerated_cluster" {
 
 * `node_group_affinity` - (Optional) Node Group Affinity for sole-tenant clusters.
     * `node_group_uri` - (Required) The URI of a sole-tenant node group resource that the cluster will be created on.
+
+* `confidential_instance_config` - (Optional) Confidential Instance Config for clusters using [Confidential VMs](https://cloud.google.com/dataproc/docs/concepts/configuring-clusters/confidential-compute)
+    * `enable_confidential_compute` - (Optional) Defines whether the instance should have confidential compute enabled.
 
 * `shielded_instance_config` (Optional) Shielded Instance Config for clusters using [Compute Engine Shielded VMs](https://cloud.google.com/security/shielded-cloud/shielded-vm).
 
@@ -489,6 +510,16 @@ cluster_config {
       boot_disk_size_gb = 30
       num_local_ssds    = 1
     }
+    instance_flexibility_policy {
+      instance_selection_list {
+        machine_types = ["n2-standard-2","n1-standard-2"]
+        rank          = 1
+      }
+      instance_selection_list {
+        machine_types = ["n2d-standard-2"]
+        rank          = 3
+      }
+    }
   }
 }
 ```
@@ -519,6 +550,10 @@ cluster_config {
 	computed value if not set (currently 500GB). Note: If SSDs are not
 	attached, it also contains the HDFS data blocks and Hadoop working directories.
 
+	* `boot_disk_provisioned_iops` - (Optional) Indicates how many IOPS to provision for the disk. This sets the number of I/O operations per second that the disk can handle.
+
+	* `boot_disk_provisioned_throughput` - (Optional) Indicates how much throughput to provision for the disk. This sets the number of throughput mb per second that the disk can handle.
+
 	* `num_local_ssds` - (Optional) The amount of local SSD disks that will be
 	attached to each master cluster node. Defaults to 0.
 
@@ -526,6 +561,12 @@ cluster_config {
 	Valid values: "scsi" (Small Computer System Interface), "nvme" (Non-Volatile
 	Memory Express). See
 	[local SSD performance](https://cloud.google.com/compute/docs/disks/local-ssd#performance).
+* `instance_flexibility_policy` (Optional) Instance flexibility Policy allowing a mixture of VM shapes.
+
+    * `instance_selection_list` - (Optional) List of instance selection options that the group will use when creating new VMs.
+        * `machine_types` - (Optional) Full machine-type names, e.g. `"n1-standard-16"`.
+
+        * `rank` - (Optional) Preference of this instance selection. A lower number means higher preference. Dataproc will first try to create a VM based on the machine-type with priority rank and fallback to next rank based on availability. Machine types and instance selections with the same priority have the same preference.
 
 * `accelerators` (Optional) The Compute Engine accelerator (GPU) configuration for these instances. Can be specified multiple times.
 
@@ -552,6 +593,16 @@ cluster_config {
       boot_disk_type    = "pd-standard"
       boot_disk_size_gb = 30
       num_local_ssds    = 1
+    }
+    instance_flexibility_policy {
+      instance_selection_list {
+        machine_types = ["n2-standard-2","n1-standard-2"]
+        rank          = 1
+      }
+      instance_selection_list {
+        machine_types = ["n2d-standard-2"]
+        rank          = 3
+      }
     }
   }
 }
@@ -584,6 +635,10 @@ cluster_config {
     computed value if not set (currently 500GB). Note: If SSDs are not
 	attached, it also contains the HDFS data blocks and Hadoop working directories.
 
+    * `boot_disk_provisioned_iops` - (Optional) Indicates how many IOPS to provision for the disk. This sets the number of I/O operations per second that the disk can handle.
+
+    * `boot_disk_provisioned_throughput` - (Optional) Indicates how much throughput to provision for the disk. This sets the number of throughput mb per second that the disk can handle.
+
     * `num_local_ssds` - (Optional) The amount of local SSD disks that will be
 	attached to each worker cluster node. Defaults to 0.
 
@@ -591,6 +646,12 @@ cluster_config {
     for more information.
 
 * `min_num_instances` (Optional) The minimum number of primary worker instances to create.  If `min_num_instances` is set, cluster creation will succeed if the number of primary workers created is at least equal to the `min_num_instances` number.
+* `instance_flexibility_policy` (Optional) Instance flexibility Policy allowing a mixture of VM shapes.
+
+    * `instance_selection_list` - (Optional) List of instance selection options that the group will use when creating new VMs.
+        * `machine_types` - (Optional) Full machine-type names, e.g. `"n1-standard-16"`.
+
+        * `rank` - (Optional) Preference of this instance selection. A lower number means higher preference. Dataproc will first try to create a VM based on the machine-type with priority rank and fallback to next rank based on availability. Machine types and instance selections with the same priority have the same preference.
 
 * `accelerators` (Optional) The Compute Engine accelerator configuration for these instances. Can be specified multiple times.
 
@@ -625,6 +686,10 @@ cluster_config {
         machine_types = ["n2d-standard-2"]
         rank          = 3
       }
+      provisioning_model_mix {
+        standard_capacity_base = 1
+        standard_capacity_percent_above_base = 50
+      }
     }
   }
 }
@@ -653,6 +718,10 @@ will be set for you based on whatever was set for the `worker_config.machine_typ
     computed value if not set (currently 500GB). Note: If SSDs are not
 	attached, it also contains the HDFS data blocks and Hadoop working directories.
 
+	* `boot_disk_provisioned_iops` - (Optional) Indicates how many IOPS to provision for the disk. This sets the number of I/O operations per second that the disk can handle.
+
+	* `boot_disk_provisioned_throughput` - (Optional) Indicates how much throughput to provision for the disk. This sets the number of throughput mb per second that the disk can handle.
+
 	* `num_local_ssds` - (Optional) The amount of local SSD disks that will be
 	attached to each preemptible worker node. Defaults to 0.
 
@@ -663,6 +732,10 @@ will be set for you based on whatever was set for the `worker_config.machine_typ
 
       * `rank` - (Optional) Preference of this instance selection. A lower number means higher preference. Dataproc will first try to create a VM based on the machine-type with priority rank and fallback to next rank based on availability. Machine types and instance selections with the same priority have the same preference.
 
+    * `provisioning_model_mix` - (Optional) Defines how the Group selects the provisioning model to ensure required reliability.
+      * `standard_capacity_base` - (Optional) The base capacity that will always use Standard VMs to avoid risk of more preemption than the minimum capacity you need. Dataproc will create only standard VMs until it reaches standardCapacityBase, then it will start using standardCapacityPercentAboveBase to mix Spot with Standard VMs. eg. If 15 instances are requested and standardCapacityBase is 5, Dataproc will create 5 standard VMs and then start mixing spot and standard VMs for remaining 10 instances.
+
+      * `standard_capacity_percent_above_base` - (Optional) The percentage of target capacity that should use Standard VM. The remaining percentage will use Spot VMs. The percentage applies only to the capacity above standardCapacityBase. eg. If 15 instances are requested and standardCapacityBase is 5 and standardCapacityPercentAboveBase is 30, Dataproc will create 5 standard VMs and then start mixing spot and standard VMs for remaining 10 instances. The mix will be 30% standard and 70% spot.
 - - -
 
 <a name="nested_software_config"></a>The `cluster_config.software_config` block supports:
@@ -705,11 +778,17 @@ cluster_config {
       kms_key_uri = "projects/projectId/locations/locationId/keyRings/keyRingId/cryptoKeys/keyId"
       root_principal_password_uri = "bucketId/o/objectId"
     }
+    identity_config {
+      user_service_account_mapping = {
+        "user@company.com" = "service-account@iam.gserviceaccounts.com"
+      }
+    }
   }
 }
 ```
 
-* `kerberos_config` (Required) Kerberos Configuration
+* `kerberos_config` (Optional) Kerberos Configuration. At least one of `identity_config`
+       or `kerberos_config` is required.
 
     * `cross_realm_trust_admin_server` - (Optional) The admin server (IP or hostname) for the
        remote trusted realm in a cross realm trust relationship.
@@ -756,6 +835,12 @@ cluster_config {
 
     * `truststore_uri` - (Optional) The Cloud Storage URI of the truststore file used for
        SSL encryption. If not provided, Dataproc will provide a self-signed certificate.
+
+* `identity_config` (Optional) Identity Configuration. At least one of `identity_config`
+       or `kerberos_config` is required.
+
+    * `user_service_account_mapping` - (Required) The end user to service account mappings
+       in a service account based multi-tenant cluster
 
 - - -
 
@@ -893,6 +978,10 @@ auxiliary_node_groups{
          computed value if not set (currently 500GB). Note: If SSDs are not
          attached, it also contains the HDFS data blocks and Hadoop working directories.
          
+      * `boot_disk_provisioned_iops` - (Optional) Indicates how many IOPS to provision for the disk. This sets the number of I/O operations per second that the disk can handle.
+
+      * `boot_disk_provisioned_throughput` - (Optional) Indicates how much throughput to provision for the disk. This sets the number of throughput mb per second that the disk can handle.
+
       * `num_local_ssds` - (Optional) The amount of local SSD disks that will be attached to each master cluster node. 
          Defaults to 0.
 
@@ -911,16 +1000,25 @@ auxiliary_node_groups{
 ```hcl
 cluster_config {
   lifecycle_config {
-    idle_delete_ttl = "10m"
+    idle_delete_ttl = "600s"
     auto_delete_time = "2120-01-01T12:00:00.01Z"
+    idle_stop_ttl = "10m"
+    auto_stop_time = "2120-01-01T12:00:00.01Z"
   }
 }
 ```
 
 * `idle_delete_ttl` - (Optional) The duration to keep the cluster alive while idling
-  (no jobs running). After this TTL, the cluster will be deleted. Valid range: [10m, 14d].
+  (no jobs running). After this TTL, the cluster will be deleted. Valid range: [300s, 1209600s].
 
 * `auto_delete_time` - (Optional) The time when cluster will be auto-deleted.
+  A timestamp in RFC3339 UTC "Zulu" format, accurate to nanoseconds.
+  Example: "2014-10-02T15:01:23.045123456Z".
+
+* `idle_stop_ttl` - (Optional) The duration to keep the cluster alive while idling
+  (no jobs running). After this TTL, the cluster will be stopped. Valid range: [10m, 14d].
+
+* `auto_stop_time` - (Optional) The time when cluster will be auto-stopped.
   A timestamp in RFC3339 UTC "Zulu" format, accurate to nanoseconds.
   Example: "2014-10-02T15:01:23.045123456Z".
 

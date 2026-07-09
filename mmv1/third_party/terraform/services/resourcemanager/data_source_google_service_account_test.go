@@ -7,6 +7,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-provider-google/google/acctest"
 	"github.com/hashicorp/terraform-provider-google/google/envvar"
+	_ "github.com/hashicorp/terraform-provider-google/google/services/resourcemanager"
 )
 
 func TestAccDatasourceGoogleServiceAccount_basic(t *testing.T) {
@@ -29,6 +30,7 @@ func TestAccDatasourceGoogleServiceAccount_basic(t *testing.T) {
 					resource.TestCheckResourceAttrSet(resourceName, "name"),
 					resource.TestCheckResourceAttrSet(resourceName, "display_name"),
 					resource.TestCheckResourceAttrSet(resourceName, "member"),
+					resource.TestCheckResourceAttrSet(resourceName, "disabled"),
 				),
 			},
 		},

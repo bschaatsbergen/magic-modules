@@ -18,7 +18,7 @@ Four different resources help you manage your IAM policy for a folder. Each of t
 
 ~> **Note:** `google_folder_iam_binding` resources **can be** used in conjunction with `google_folder_iam_member` resources **only if** they do not grant privilege to the same role.
 
-~> **Note:** The underlying API method `projects.setIamPolicy` has constraints which are documented [here](https://cloud.google.com/resource-manager/reference/rest/v1/projects/setIamPolicy). In addition to these constraints, 
+~> **Note:** The underlying API method `projects.setIamPolicy` has constraints which are documented [here](https://docs.cloud.google.com/resource-manager/reference/rest/v1/projects/setIamPolicy). In addition to these constraints, 
    IAM Conditions cannot be used with Basic Roles such as Owner. Violating these constraints will result in the API returning a 400 error code so please review these if you encounter errors with this resource.
 
 ## google_folder_iam_policy
@@ -212,7 +212,7 @@ exported:
 
 ## Import
 
--> **Custom Roles**: If you're importing a IAM resource with a custom role, make sure to use the
+-> **Custom Roles** If you're importing a IAM resource with a custom role, make sure to use the
  full name of the custom role, e.g. `organizations/{{org_id}}/roles/{{role_id}}`.
  
 -> **Conditional IAM Bindings**: If you're importing a IAM binding with a condition block, make sure

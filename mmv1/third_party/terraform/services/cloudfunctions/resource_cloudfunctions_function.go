@@ -7,6 +7,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 
+	"github.com/hashicorp/terraform-provider-google/google/registry"
 	"github.com/hashicorp/terraform-provider-google/google/tpgresource"
 	transport_tpg "github.com/hashicorp/terraform-provider-google/google/transport"
 	"github.com/hashicorp/terraform-provider-google/google/verify"
@@ -53,7 +54,7 @@ func labelKeyValidator(val interface{}, key string) (warns []string, errs []erro
 	m := val.(map[string]interface{})
 	for k := range m {
 		if !labelKeyRegex.MatchString(k) {
-			errs = append(errs, fmt.Errorf("%q is an invalid label key. See https://cloud.google.com/resource-manager/docs/creating-managing-labels#requirements", k))
+			errs = append(errs, fmt.Errorf("%q is an invalid label key. See https://docs.cloud.google.com/resource-manager/docs/creating-managing-labels#requirements", k))
 		}
 	}
 	return
@@ -65,9 +66,9 @@ func (s *CloudFunctionId) locationId() string {
 
 func parseCloudFunctionId(d *schema.ResourceData, config *transport_tpg.Config) (*CloudFunctionId, error) {
 	if err := tpgresource.ParseImportId([]string{
-		"projects/(?P<project>[^/]+)/locations/(?P<region>[^/]+)/functions/(?P<name>[^/]+)",
-		"(?P<project>[^/]+)/(?P<region>[^/]+)/(?P<name>[^/]+)",
-		"(?P<name>[^/]+)",
+		"^projects/(?P<project>[^/]+)/locations/(?P<region>[^/]+)/functions/(?P<name>[^/]+)$",
+		"^(?P<project>[^/]+)/(?P<region>[^/]+)/(?P<name>[^/]+)$",
+		"^(?P<name>[^/]+)$",
 	}, d, config); err != nil {
 		return nil, err
 	}
@@ -136,13 +137,14 @@ func ResourceCloudFunctionsFunction() *schema.Resource {
 		},
 
 		Timeouts: &schema.ResourceTimeout{
-			Create: schema.DefaultTimeout(5 * time.Minute),
-			Read:   schema.DefaultTimeout(5 * time.Minute),
-			Update: schema.DefaultTimeout(5 * time.Minute),
-			Delete: schema.DefaultTimeout(5 * time.Minute),
+			Create: schema.DefaultTimeout(20 * time.Minute),
+			Read:   schema.DefaultTimeout(20 * time.Minute),
+			Update: schema.DefaultTimeout(20 * time.Minute),
+			Delete: schema.DefaultTimeout(20 * time.Minute),
 		},
 
 		CustomizeDiff: customdiff.All(
+			tpgresource.DefaultProviderDeletionPolicy("DELETE"),
 			tpgresource.DefaultProviderProject,
 			tpgresource.DefaultProviderRegion,
 			tpgresource.SetLabelsDiff,
@@ -264,7 +266,7 @@ func ResourceCloudFunctionsFunction() *schema.Resource {
 				Type:         schema.TypeMap,
 				ValidateFunc: labelKeyValidator,
 				Optional:     true,
-				Description: `A set of key/value label pairs to assign to the function. Label keys must follow the requirements at https://cloud.google.com/resource-manager/docs/creating-managing-labels#requirements.
+				Description: `A set of key/value label pairs to assign to the function. Label keys must follow the requirements at https://docs.cloud.google.com/resource-manager/docs/creating-managing-labels#requirements.
 
 				**Note**: This field is non-authoritative, and will only manage the labels present in your configuration.
 				Please refer to the field 'effective_labels' for all of the labels present on the resource.`,
@@ -287,7 +289,7 @@ func ResourceCloudFunctionsFunction() *schema.Resource {
 			"runtime": {
 				Type:        schema.TypeString,
 				Required:    true,
-				Description: `The runtime in which the function is going to run. Eg. "nodejs12", "nodejs14", "python37", "go111".`,
+				Description: `The runtime in which the function is going to run. Eg. "nodejs20", "python37", "go111".`,
 			},
 
 			"service_account_email": {
@@ -492,16 +494,50 @@ func ResourceCloudFunctionsFunction() *schema.Resource {
 					},
 				},
 			},
+
+			"automatic_update_policy": {
+				Type:          schema.TypeList,
+				Optional:      true,
+				Computed:      true,
+				ConflictsWith: []string{"on_deploy_update_policy"},
+				MaxItems:      1,
+				Description:   `Security patches are applied automatically to the runtime without requiring the function to be redeployed.`,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{},
+				},
+			},
+
+			"on_deploy_update_policy": {
+				Type:          schema.TypeList,
+				Optional:      true,
+				ConflictsWith: []string{"automatic_update_policy"},
+				MaxItems:      1,
+				Description:   `Security patches are only applied when a function is redeployed.`,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"runtime_version": {
+							Type:        schema.TypeString,
+							Computed:    true,
+							Description: `The runtime version which was used during latest function deployment.`,
+						},
+					},
+				},
+			},
+
 			"status": {
 				Type:        schema.TypeString,
 				Computed:    true,
 				Description: `Describes the current stage of a deployment.`,
 			},
+
 			"version_id": {
 				Type:        schema.TypeString,
 				Computed:    true,
 				Description: `The version identifier of the Cloud Function. Each deployment attempt results in a new version of a function being created.`,
 			},
+			//UDP schema start
+			"deletion_policy": tpgresource.DeletionPolicySchemaEntry("DELETE"),
+			//UDP schema end
 		},
 		UseJSONNumber: true,
 	}
@@ -590,6 +626,14 @@ func resourceCloudFunctionsCreate(d *schema.ResourceData, meta interface{}) erro
 			"You must specify a trigger when deploying a new function.")
 	}
 
+	if v, ok := d.GetOk("automatic_update_policy"); ok {
+		function.AutomaticUpdatePolicy = expandAutomaticUpdatePolicy(v.([]interface{}))
+		function.OnDeployUpdatePolicy = nil
+	} else if v, ok := d.GetOk("on_deploy_update_policy"); ok {
+		function.OnDeployUpdatePolicy = expandOnDeployUpdatePolicy(v.([]interface{}))
+		function.AutomaticUpdatePolicy = nil
+	}
+
 	if v, ok := d.GetOk("ingress_settings"); ok {
 		function.IngressSettings = v.(string)
 	}
@@ -645,7 +689,7 @@ func resourceCloudFunctionsCreate(d *schema.ResourceData, meta interface{}) erro
 	// source code and we need to try the whole creation again.
 	rerr := transport_tpg.Retry(transport_tpg.RetryOptions{
 		RetryFunc: func() error {
-			op, err := config.NewCloudFunctionsClient(userAgent).Projects.Locations.Functions.Create(
+			op, err := NewClient(config, userAgent).Projects.Locations.Functions.Create(
 				cloudFuncId.locationId(), function).Do()
 			if err != nil {
 				return err
@@ -679,7 +723,7 @@ func resourceCloudFunctionsRead(d *schema.ResourceData, meta interface{}) error 
 		return err
 	}
 
-	function, err := config.NewCloudFunctionsClient(userAgent).Projects.Locations.Functions.Get(cloudFuncId.CloudFunctionId()).Do()
+	function, err := NewClient(config, userAgent).Projects.Locations.Functions.Get(cloudFuncId.CloudFunctionId()).Do()
 	if err != nil {
 		return transport_tpg.HandleNotFoundError(err, d, fmt.Sprintf("Target CloudFunctions Function %q", cloudFuncId.Name))
 	}
@@ -808,12 +852,40 @@ func resourceCloudFunctionsRead(d *schema.ResourceData, meta interface{}) error 
 	if err := d.Set("version_id", strconv.FormatInt(function.VersionId, 10)); err != nil {
 		return fmt.Errorf("Error setting version_id: %s", err)
 	}
+	// check the on_deploy_update_policy first as it's mutually exclusive to automatice_update_policy, and the latter is system default
+	if function.OnDeployUpdatePolicy != nil {
+		if err := d.Set("on_deploy_update_policy", flattenOnDeployUpdatePolicy(function.OnDeployUpdatePolicy)); err != nil {
+			return fmt.Errorf("Error setting on_deploy_update_policy: %s", err)
+		}
+		function.AutomaticUpdatePolicy = nil
+		d.Set("automatic_update_policy", nil)
+	} else {
+		d.Set("on_deploy_update_policy", nil)
+	}
+
+	if function.AutomaticUpdatePolicy != nil {
+		if err := d.Set("automatic_update_policy", flattenAutomaticUpdatePolicy(function.AutomaticUpdatePolicy)); err != nil {
+			return fmt.Errorf("Error setting automatic_update_policy: %s", err)
+		}
+		d.Set("on_deploy_update_policy", nil)
+	} else {
+		d.Set("automatic_update_policy", nil)
+	}
+
+	if err := tpgresource.DeletionPolicyReadDefault(d, config, "DELETE"); err != nil {
+		return err
+	}
 
 	return nil
 }
 
 func resourceCloudFunctionsUpdate(d *schema.ResourceData, meta interface{}) error {
 	log.Printf("[DEBUG]: Updating google_cloudfunctions_function")
+
+	if tpgresource.DeletionPolicyPreUpdate(d, ResourceCloudFunctionsFunction) {
+		return ResourceCloudFunctionsFunction().Read(d, meta)
+	}
+
 	config := meta.(*transport_tpg.Config)
 	userAgent, err := tpgresource.GenerateUserAgentString(d, config.UserAgent)
 	if err != nil {
@@ -831,7 +903,7 @@ func resourceCloudFunctionsUpdate(d *schema.ResourceData, meta interface{}) erro
 	}
 
 	// The full function needs to supplied in the PATCH call to evaluate some Organization Policies. https://github.com/hashicorp/terraform-provider-google/issues/6603
-	function, err := config.NewCloudFunctionsClient(userAgent).Projects.Locations.Functions.Get(cloudFuncId.CloudFunctionId()).Do()
+	function, err := NewClient(config, userAgent).Projects.Locations.Functions.Get(cloudFuncId.CloudFunctionId()).Do()
 	if err != nil {
 		return transport_tpg.HandleNotFoundError(err, d, fmt.Sprintf("Target CloudFunctions Function %q", cloudFuncId.Name))
 	}
@@ -911,7 +983,7 @@ func resourceCloudFunctionsUpdate(d *schema.ResourceData, meta interface{}) erro
 		updateMaskArr = append(updateMaskArr, "buildEnvironmentVariables")
 	}
 
-	if d.HasChange("vpc_connector") {
+	if d.HasChange("vpc_connector") || d.HasChange("vpc_connector_egress_settings") {
 		function.VpcConnector = d.Get("vpc_connector").(string)
 		updateMaskArr = append(updateMaskArr, "vpcConnector")
 	}
@@ -964,12 +1036,28 @@ func resourceCloudFunctionsUpdate(d *schema.ResourceData, meta interface{}) erro
 		updateMaskArr = append(updateMaskArr, "buildServiceAccount")
 	}
 
+	if d.HasChange("automatic_update_policy") {
+		function.AutomaticUpdatePolicy = expandAutomaticUpdatePolicy(d.Get("automatic_update_policy").([]interface{}))
+		if function.AutomaticUpdatePolicy != nil {
+			function.OnDeployUpdatePolicy = nil
+		}
+		updateMaskArr = append(updateMaskArr, "automatic_update_policy")
+	}
+
+	if d.HasChange("on_deploy_update_policy") {
+		function.OnDeployUpdatePolicy = expandOnDeployUpdatePolicy(d.Get("on_deploy_update_policy").([]interface{}))
+		if function.OnDeployUpdatePolicy != nil {
+			function.AutomaticUpdatePolicy = nil
+		}
+		updateMaskArr = append(updateMaskArr, "on_deploy_update_policy")
+	}
+
 	if len(updateMaskArr) > 0 {
 		log.Printf("[DEBUG] Send Patch CloudFunction Configuration request: %#v", function)
 		updateMask := strings.Join(updateMaskArr, ",")
 		rerr := transport_tpg.Retry(transport_tpg.RetryOptions{
 			RetryFunc: func() error {
-				op, err := config.NewCloudFunctionsClient(userAgent).Projects.Locations.Functions.Patch(function.Name, function).
+				op, err := NewClient(config, userAgent).Projects.Locations.Functions.Patch(function.Name, function).
 					UpdateMask(updateMask).Do()
 				if err != nil {
 					return err
@@ -990,6 +1078,13 @@ func resourceCloudFunctionsUpdate(d *schema.ResourceData, meta interface{}) erro
 }
 
 func resourceCloudFunctionsDestroy(d *schema.ResourceData, meta interface{}) error {
+
+	if ok, err := tpgresource.DeletionPolicyPreDelete(d); err != nil {
+		return err
+	} else if ok {
+		return nil
+	}
+
 	config := meta.(*transport_tpg.Config)
 	userAgent, err := tpgresource.GenerateUserAgentString(d, config.UserAgent)
 	if err != nil {
@@ -1001,7 +1096,7 @@ func resourceCloudFunctionsDestroy(d *schema.ResourceData, meta interface{}) err
 		return err
 	}
 
-	op, err := config.NewCloudFunctionsClient(userAgent).Projects.Locations.Functions.Delete(cloudFuncId.CloudFunctionId()).Do()
+	op, err := NewClient(config, userAgent).Projects.Locations.Functions.Delete(cloudFuncId.CloudFunctionId()).Do()
 	if err != nil {
 		return err
 	}
@@ -1231,4 +1326,52 @@ func flattenSecretVersion(secretVersions []*cloudfunctions.SecretVersion) []map[
 		}
 	}
 	return result
+}
+
+func expandAutomaticUpdatePolicy(configured []interface{}) *cloudfunctions.AutomaticUpdatePolicy {
+	if len(configured) == 0 {
+		return nil
+	}
+	return &cloudfunctions.AutomaticUpdatePolicy{}
+}
+
+func flattenAutomaticUpdatePolicy(policy *cloudfunctions.AutomaticUpdatePolicy) []map[string]interface{} {
+	result := make([]map[string]interface{}, 0, 1)
+	if policy == nil {
+		return nil
+	}
+	// Have to append an empty element for empty message type
+	result = append(result, map[string]interface{}{})
+	return result
+}
+
+func expandOnDeployUpdatePolicy(configured []interface{}) *cloudfunctions.OnDeployUpdatePolicy {
+	if len(configured) == 0 {
+		return nil
+	}
+	return &cloudfunctions.OnDeployUpdatePolicy{}
+}
+
+func flattenOnDeployUpdatePolicy(policy *cloudfunctions.OnDeployUpdatePolicy) []map[string]interface{} {
+	result := make([]map[string]interface{}, 0, 1)
+	if policy == nil {
+		return nil
+	}
+
+	result = append(result, map[string]interface{}{
+		"runtime_version": policy.RuntimeVersion,
+	})
+
+	log.Printf("flatten on_deploy_update_policy to: %s", result)
+
+	return result
+}
+
+func init() {
+	registry.Schema{
+		Name:        "google_cloudfunctions_function",
+		ProductName: "cloudfunctions",
+		Type:        registry.SchemaTypeResource,
+		Schema:      ResourceCloudFunctionsFunction(),
+	}.Register()
 }

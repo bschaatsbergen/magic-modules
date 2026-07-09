@@ -2,12 +2,16 @@ package sql_test
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 	"github.com/hashicorp/terraform-provider-google/google/acctest"
 	"github.com/hashicorp/terraform-provider-google/google/envvar"
+	_ "github.com/hashicorp/terraform-provider-google/google/services/resourcemanager"
+	"github.com/hashicorp/terraform-provider-google/google/services/sql"
 )
 
 func TestAccSqlUser_mysql(t *testing.T) {
@@ -34,10 +38,56 @@ func TestAccSqlUser_mysql(t *testing.T) {
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckGoogleSqlUserExists(t, "google_sql_user.user1"),
 					testAccCheckGoogleSqlUserExists(t, "google_sql_user.user2"),
+					testAccCheckGoogleSqlUserExists(t, "google_sql_user.user3"),
 				),
 			},
 			{
 				ResourceName:            "google_sql_user.user2",
+				ImportStateId:           fmt.Sprintf("%s/%s/gmail.com/admin", envvar.GetTestProjectFromEnv(), instance),
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"password"},
+			},
+			{
+				ResourceName:            "google_sql_user.user3",
+				ImportStateId:           fmt.Sprintf("%s/%s/10.0.0.0/24/admin", envvar.GetTestProjectFromEnv(), instance),
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"password"},
+			},
+		},
+	})
+}
+
+func TestAccSqlUser_password_wo(t *testing.T) {
+	t.Parallel()
+
+	instance := fmt.Sprintf("tf-test-%d", acctest.RandInt(t))
+	acctest.VcrTest(t, resource.TestCase{
+		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
+		CheckDestroy:             testAccSqlUserDestroyProducer(t),
+		Steps: []resource.TestStep{
+			{
+				Config: testGoogleSqlUser_password_wo(instance, "password"),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckGoogleSqlUserExists(t, "google_sql_user.user1"),
+				),
+			},
+			{
+				// Update password
+				Config: testGoogleSqlUser_new_password_wo(instance, "new_password"),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction("google_sql_user.user1", plancheck.ResourceActionUpdate),
+					},
+				},
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckGoogleSqlUserExists(t, "google_sql_user.user1"),
+				),
+			},
+			{
+				ResourceName:            "google_sql_user.user1",
 				ImportStateId:           fmt.Sprintf("%s/%s/gmail.com/admin", envvar.GetTestProjectFromEnv(), instance),
 				ImportState:             true,
 				ImportStateVerify:       true,
@@ -86,7 +136,66 @@ func TestAccSqlUser_iamGroupUser(t *testing.T) {
 		CheckDestroy:             testAccSqlUserDestroyProducer(t),
 		Steps: []resource.TestStep{
 			{
-				Config: testGoogleSqlUser_iamGroupUser(instance),
+				Config: testGoogleSqlUser_iamGroupUser("iam-group-auth-test-group@google.com", instance),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckGoogleSqlUserExists(t, "google_sql_user.user"),
+				),
+			},
+			{
+				ResourceName:            "google_sql_user.user",
+				ImportStateId:           fmt.Sprintf("%s/%s/iam-group-auth-test-group@google.com", envvar.GetTestProjectFromEnv(), instance),
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"password"},
+			},
+		},
+	})
+}
+
+func TestAccSqlUser_iamGroupUser_capitalizedHostName(t *testing.T) {
+	// Multiple fine-grained resources
+	acctest.SkipIfVcr(t)
+	t.Parallel()
+
+	instance := fmt.Sprintf("tf-test-%d", acctest.RandInt(t))
+	acctest.VcrTest(t, resource.TestCase{
+		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
+		CheckDestroy:             testAccSqlUserDestroyProducer(t),
+		Steps: []resource.TestStep{
+			{
+				Config: testGoogleSqlUser_iamGroupUser("iam-group-auth-test-group@GOOGLE.com", instance),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckGoogleSqlUserExists(t, "google_sql_user.user"),
+				),
+			},
+			{
+				ResourceName:            "google_sql_user.user",
+				ImportStateId:           fmt.Sprintf("%s/%s/iam-group-auth-test-group@google.com", envvar.GetTestProjectFromEnv(), instance),
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"password"},
+			},
+		},
+	})
+}
+
+func TestAccSqlUser_postgres_iamGroupUser(t *testing.T) {
+	// Multiple fine-grained resources
+	acctest.SkipIfVcr(t)
+	t.Parallel()
+
+	instance := fmt.Sprintf("tf-test-%d", acctest.RandInt(t))
+	acctest.VcrTest(t, resource.TestCase{
+		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
+		ExternalProviders: map[string]resource.ExternalProvider{
+			"time": {},
+		},
+		CheckDestroy: testAccSqlUserDestroyProducer(t),
+		Steps: []resource.TestStep{
+			{
+				Config: testGoogleSqlUser_postgres_iamGroupUser("iam-group-auth-test-group@google.com", instance),
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckGoogleSqlUserExists(t, "google_sql_user.user"),
 				),
@@ -210,7 +319,11 @@ func testAccCheckGoogleSqlUserExists(t *testing.T, n string) resource.TestCheckF
 		name := rs.Primary.Attributes["name"]
 		instance := rs.Primary.Attributes["instance"]
 		host := rs.Primary.Attributes["host"]
-		users, err := config.NewSqlAdminClient(config.UserAgent).Users.List(config.Project,
+		databaseInstance, err := sql.NewClient(config, config.UserAgent).Instances.Get(config.Project, instance).Do()
+		if err != nil {
+			return err
+		}
+		users, err := sql.NewClient(config, config.UserAgent).Users.List(config.Project,
 			instance).Do()
 
 		if err != nil {
@@ -218,7 +331,16 @@ func testAccCheckGoogleSqlUserExists(t *testing.T, n string) resource.TestCheckF
 		}
 
 		for _, user := range users.Items {
-			if user.Name == name && user.Host == host {
+			username := name
+			if user.Type == "CLOUD_IAM_GROUP" && strings.Contains(databaseInstance.DatabaseVersion, "MYSQL") {
+				splitName := strings.SplitN(name, "@", 2)
+				if len(splitName) == 2 {
+					groupUsername := splitName[0]
+					groupHostname := splitName[1]
+					username = groupUsername + "@" + strings.ToLower(groupHostname)
+				}
+			}
+			if user.Name == username && user.Host == host {
 				return nil
 			}
 		}
@@ -231,7 +353,7 @@ func testAccCheckGoogleSqlUserExistsWithName(t *testing.T, instance, name string
 	return func(s *terraform.State) error {
 		config := acctest.GoogleProviderConfig(t)
 
-		users, err := config.NewSqlAdminClient(config.UserAgent).Users.List(config.Project,
+		users, err := sql.NewClient(config, config.UserAgent).Users.List(config.Project,
 			instance).Do()
 
 		if err != nil {
@@ -259,7 +381,7 @@ func testAccSqlUserDestroyProducer(t *testing.T) func(s *terraform.State) error 
 			name := rs.Primary.Attributes["name"]
 			instance := rs.Primary.Attributes["instance"]
 			host := rs.Primary.Attributes["host"]
-			users, err := config.NewSqlAdminClient(config.UserAgent).Users.List(config.Project,
+			users, err := sql.NewClient(config, config.UserAgent).Users.List(config.Project,
 				instance).Do()
 
 			if users == nil {
@@ -316,6 +438,506 @@ func TestAccSqlUser_mysqlPasswordPolicy(t *testing.T) {
 	})
 }
 
+func TestAccSqlUser_instanceWithActivationPolicy(t *testing.T) {
+	// Multiple fine-grained resources
+	acctest.SkipIfVcr(t)
+	t.Parallel()
+
+	instance := fmt.Sprintf("tf-test-%d", acctest.RandInt(t))
+
+	acctest.VcrTest(t, resource.TestCase{
+		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
+		CheckDestroy:             testAccSqlUserDestroyProducer(t),
+		Steps: []resource.TestStep{
+			{
+				Config: testGoogleSqlUser_instanceWithActivationPolicy(instance, "ALWAYS"),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckGoogleSqlUserExists(t, "google_sql_user.user"),
+				),
+			},
+			// Step 2: Update activation_policy to NEVER
+			{
+				Config: testGoogleSqlUser_instanceWithActivationPolicy(instance, "NEVER"),
+			},
+			// Step 3: Refresh to verify no errors
+			{
+				Config: testGoogleSqlUser_instanceWithActivationPolicy(instance, "NEVER"),
+			},
+			// Step 4: Update activation_policy to ALWAYS so that post-test destroy code is able to delete the google_sql_user resource
+			{
+				Config: testGoogleSqlUser_instanceWithActivationPolicy(instance, "ALWAYS"),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckGoogleSqlUserExists(t, "google_sql_user.user"),
+				),
+			},
+		},
+	})
+}
+
+func TestAccSqlUser_mysql_createUserWithDatabaseRoles(t *testing.T) {
+	t.Parallel()
+
+	instance := fmt.Sprintf("tf-test-%d", acctest.RandInt(t))
+	acctest.VcrTest(t, resource.TestCase{
+		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
+		CheckDestroy:             testAccSqlUserDestroyProducer(t),
+		Steps: []resource.TestStep{
+			{
+				Config: testGoogleSqlUser_mysql_userWithDatabaseRoles(instance, "testuser", "gmail.com", "BUILT_IN", "password", `["cloudsqlsuperuser"]`),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckGoogleSqlUserExists(t, "google_sql_user.testuser"),
+				),
+			},
+			{
+				ResourceName:            "google_sql_user.testuser",
+				ImportStateId:           fmt.Sprintf("%s/%s/gmail.com/testuser", envvar.GetTestProjectFromEnv(), instance),
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"password", "database_roles"},
+			},
+			{
+				Config: testGoogleSqlUser_mysql_userWithDatabaseRoles(instance, "admin@hashicorptest.com", "", "CLOUD_IAM_USER", "", `["cloudsqlsuperuser"]`),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckGoogleSqlUserExists(t, "google_sql_user.admin"),
+				),
+			},
+			{
+				ResourceName:            "google_sql_user.admin",
+				ImportStateId:           fmt.Sprintf("%s/%s/%%/admin@hashicorptest.com", envvar.GetTestProjectFromEnv(), instance),
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"password", "database_roles"},
+			},
+			{
+				Config: testGoogleSqlUser_mysql_userWithDatabaseRoles(instance, "iam-group-auth-test-group@google.com", "", "CLOUD_IAM_GROUP", "", `["cloudsqlsuperuser"]`),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckGoogleSqlUserExists(t, "google_sql_user.iam-group-auth-test-group"),
+				),
+			},
+			{
+				ResourceName:            "google_sql_user.iam-group-auth-test-group",
+				ImportStateId:           fmt.Sprintf("%s/%s/%%/iam-group-auth-test-group@google.com", envvar.GetTestProjectFromEnv(), instance),
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"password", "database_roles"},
+			},
+		},
+	})
+}
+
+func TestAccSqlUser_mysql_updateUserWithDatabaseRoles(t *testing.T) {
+	t.Parallel()
+
+	instance := fmt.Sprintf("tf-test-%d", acctest.RandInt(t))
+	acctest.VcrTest(t, resource.TestCase{
+		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
+		CheckDestroy:             testAccSqlUserDestroyProducer(t),
+		Steps: []resource.TestStep{
+			{
+				Config: testGoogleSqlUser_mysql_userWithDatabaseRoles(instance, "testuser", "gmail.com", "BUILT_IN", "password", `[]`),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckGoogleSqlUserExists(t, "google_sql_user.testuser"),
+				),
+			},
+			{
+				ResourceName:            "google_sql_user.testuser",
+				ImportStateId:           fmt.Sprintf("%s/%s/gmail.com/testuser", envvar.GetTestProjectFromEnv(), instance),
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"password", "database_roles"},
+			},
+			{
+				Config: testGoogleSqlUser_mysql_userWithDatabaseRoles(instance, "testuser", "gmail.com", "BUILT_IN", "password", `["cloudsqlsuperuser"]`),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckGoogleSqlUserExists(t, "google_sql_user.testuser"),
+				),
+			},
+			{
+				ResourceName:            "google_sql_user.testuser",
+				ImportStateId:           fmt.Sprintf("%s/%s/gmail.com/testuser", envvar.GetTestProjectFromEnv(), instance),
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"password", "database_roles"},
+			},
+			{
+				Config: testGoogleSqlUser_mysql_userWithDatabaseRoles(instance, "admin@hashicorptest.com", "", "CLOUD_IAM_USER", "", `[]`),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckGoogleSqlUserExists(t, "google_sql_user.admin"),
+				),
+			},
+			{
+				ResourceName:            "google_sql_user.admin",
+				ImportStateId:           fmt.Sprintf("%s/%s/%%/admin@hashicorptest.com", envvar.GetTestProjectFromEnv(), instance),
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"password", "database_roles"},
+			},
+			{
+				Config: testGoogleSqlUser_mysql_userWithDatabaseRoles(instance, "admin@hashicorptest.com", "", "CLOUD_IAM_USER", "", `["cloudsqlsuperuser"]`),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckGoogleSqlUserExists(t, "google_sql_user.admin"),
+				),
+			},
+			{
+				ResourceName:            "google_sql_user.admin",
+				ImportStateId:           fmt.Sprintf("%s/%s/%%/admin@hashicorptest.com", envvar.GetTestProjectFromEnv(), instance),
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"password", "database_roles"},
+			},
+			{
+				Config: testGoogleSqlUser_mysql_saUserWithDatabaseRoles(instance, "sa_user", `[]`),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckGoogleSqlUserExists(t, "google_sql_user.sa_user"),
+				),
+			},
+			{
+				ResourceName:            "google_sql_user.sa_user",
+				ImportStateId:           fmt.Sprintf("%s/%s/%%/%s@%s.iam.gserviceaccount.com", envvar.GetTestProjectFromEnv(), instance, instance, envvar.GetTestProjectFromEnv()),
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"password", "database_roles"},
+			},
+			{
+				Config: testGoogleSqlUser_mysql_saUserWithDatabaseRoles(instance, "sa_user", `["cloudsqlsuperuser"]`),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckGoogleSqlUserExists(t, "google_sql_user.sa_user"),
+				),
+			},
+			{
+				ResourceName:            "google_sql_user.sa_user",
+				ImportStateId:           fmt.Sprintf("%s/%s/%%/%s@%s.iam.gserviceaccount.com", envvar.GetTestProjectFromEnv(), instance, instance, envvar.GetTestProjectFromEnv()),
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"password", "database_roles"},
+			},
+		},
+	})
+}
+
+func TestAccSqlUser_postgres_updateUserWithDatabaseRoles(t *testing.T) {
+	t.Parallel()
+
+	instance := fmt.Sprintf("tf-test-%d", acctest.RandInt(t))
+	acctest.VcrTest(t, resource.TestCase{
+		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
+		ExternalProviders: map[string]resource.ExternalProvider{
+			"time": {},
+		},
+		CheckDestroy: testAccSqlUserDestroyProducer(t),
+		Steps: []resource.TestStep{
+			{
+				Config: testGoogleSqlUser_postgres_userWithDatabaseRoles(instance, "testuser", "BUILT_IN", "password", `[]`),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckGoogleSqlUserExists(t, "google_sql_user.testuser"),
+				),
+			},
+			{
+				ResourceName:            "google_sql_user.testuser",
+				ImportStateId:           fmt.Sprintf("%s/%s/testuser", envvar.GetTestProjectFromEnv(), instance),
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"password", "database_roles"},
+			},
+			{
+				Config: testGoogleSqlUser_postgres_userWithDatabaseRoles(instance, "testuser", "BUILT_IN", "password", `["cloudsqlsuperuser"]`),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckGoogleSqlUserExists(t, "google_sql_user.testuser"),
+				),
+			},
+			{
+				ResourceName:            "google_sql_user.testuser",
+				ImportStateId:           fmt.Sprintf("%s/%s/testuser", envvar.GetTestProjectFromEnv(), instance),
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"password", "database_roles"},
+			},
+			{
+				Config: testGoogleSqlUser_postgres_iamUserWithDatabaseRoles(instance, "admin@hashicorptest.com", `[]`),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckGoogleSqlUserExists(t, "google_sql_user.admin"),
+				),
+			},
+			{
+				ResourceName:            "google_sql_user.admin",
+				ImportStateId:           fmt.Sprintf("%s/%s/admin@hashicorptest.com", envvar.GetTestProjectFromEnv(), instance),
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"password", "database_roles"},
+			},
+			{
+				Config: testGoogleSqlUser_postgres_iamUserWithDatabaseRoles(instance, "admin@hashicorptest.com", `["cloudsqlsuperuser"]`),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckGoogleSqlUserExists(t, "google_sql_user.admin"),
+				),
+			},
+			{
+				ResourceName:            "google_sql_user.admin",
+				ImportStateId:           fmt.Sprintf("%s/%s/admin@hashicorptest.com", envvar.GetTestProjectFromEnv(), instance),
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"password", "database_roles"},
+			},
+			{
+				Config: testGoogleSqlUser_postgres_saUserWithDatabaseRoles(instance, "sa_user", `[]`),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckGoogleSqlUserExists(t, "google_sql_user.sa_user"),
+				),
+			},
+			{
+				ResourceName:            "google_sql_user.sa_user",
+				ImportStateId:           fmt.Sprintf("%s/%s//%s@%s.iam", envvar.GetTestProjectFromEnv(), instance, instance, envvar.GetTestProjectFromEnv()),
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"password", "database_roles"},
+			},
+			{
+				Config: testGoogleSqlUser_postgres_saUserWithDatabaseRoles(instance, "sa_user", `["cloudsqlsuperuser"]`),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckGoogleSqlUserExists(t, "google_sql_user.sa_user"),
+				),
+			},
+			{
+				ResourceName:            "google_sql_user.sa_user",
+				ImportStateId:           fmt.Sprintf("%s/%s//%s@%s.iam", envvar.GetTestProjectFromEnv(), instance, instance, envvar.GetTestProjectFromEnv()),
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"password", "database_roles"},
+			},
+		},
+	})
+}
+
+func testGoogleSqlUser_mysql_userWithDatabaseRoles(instance, username, host, usertype, password, roles string) string {
+	return fmt.Sprintf(`
+resource "google_sql_database_instance" "instance" {
+  name                = "%s"
+  region              = "us-central1"
+  database_version    = "MYSQL_8_0"
+  deletion_protection = false
+  settings {
+    tier = "db-f1-micro"
+    database_flags {
+      name  = "cloudsql_iam_authentication"
+      value = "on"
+    }
+  }
+}
+
+resource "google_sql_user" "%s" {
+  name     = "%s"
+  host     = "%s"
+  password = "%s"
+  type     = "%s"
+  instance = google_sql_database_instance.instance.name
+  database_roles = %s
+}
+`, instance, strings.Split(username, "@")[0], username, host, password, usertype, roles)
+}
+
+func testGoogleSqlUser_mysql_saUserWithDatabaseRoles(instance, username, roles string) string {
+	return fmt.Sprintf(`
+resource "google_sql_database_instance" "instance" {
+  name                = "%s"
+  region              = "us-central1"
+  database_version    = "MYSQL_8_0"
+  deletion_protection = false
+  settings {
+    tier = "db-f1-micro"
+    database_flags {
+      name  = "cloudsql_iam_authentication"
+      value = "on"
+    }
+  }
+}
+
+resource "google_service_account" "sa" {
+  account_id   = "%s"
+  display_name = "%s"
+}
+
+resource "google_service_account_key" "sa_key" {
+  service_account_id = google_service_account.sa.email
+}
+
+resource "google_sql_user" "%s" {
+  name     = google_service_account.sa.email
+  instance = google_sql_database_instance.instance.name
+  type     = "CLOUD_IAM_SERVICE_ACCOUNT"
+  database_roles = %s
+}
+`, instance, instance, instance, username, roles)
+}
+
+func testGoogleSqlUser_postgres_saUserWithDatabaseRoles(instance, username, roles string) string {
+	return fmt.Sprintf(`
+resource "google_sql_database_instance" "instance" {
+  name                = "%s"
+  region              = "us-central1"
+  database_version    = "POSTGRES_9_6"
+  deletion_protection = false
+  settings {
+    tier = "db-f1-micro"
+    database_flags {
+      name  = "cloudsql.iam_authentication"
+      value = "on"
+    }
+  }
+}
+
+# TODO: Remove with resolution of https://github.com/hashicorp/terraform-provider-google/issues/14233
+resource "time_sleep" "wait_60_seconds" {
+  depends_on = [google_sql_database_instance.instance]
+  create_duration = "60s"
+}
+
+resource "google_service_account" "sa" {
+  account_id   = "%s"
+  display_name = "%s"
+}
+
+resource "google_service_account_key" "sa_key" {
+  service_account_id = google_service_account.sa.email
+}
+
+resource "google_sql_user" "%s" {
+  depends_on = [time_sleep.wait_60_seconds]
+  name     = trimsuffix(google_service_account.sa.email, ".gserviceaccount.com")
+  instance = google_sql_database_instance.instance.name
+  type     = "CLOUD_IAM_SERVICE_ACCOUNT"
+  database_roles = %s
+}
+`, instance, instance, instance, username, roles)
+}
+
+func testGoogleSqlUser_postgres_userWithDatabaseRoles(instance, username, usertype, password, roles string) string {
+	return fmt.Sprintf(`
+resource "google_sql_database_instance" "instance" {
+  name                = "%s"
+  region              = "us-central1"
+  database_version    = "POSTGRES_9_6"
+  deletion_protection = false
+  settings {
+    tier = "db-f1-micro"
+    database_flags {
+      name  = "cloudsql.iam_authentication"
+      value = "on"
+    }
+  }
+}
+
+resource "google_sql_user" "%s" {
+  name     = "%s"
+  password = "%s"
+  type     = "%s"
+  instance = google_sql_database_instance.instance.name
+  database_roles = %s
+}
+`, instance, strings.Split(username, "@")[0], username, password, usertype, roles)
+}
+
+func testGoogleSqlUser_postgres_iamUserWithDatabaseRoles(instance, username, roles string) string {
+	return fmt.Sprintf(`
+resource "google_sql_database_instance" "instance" {
+  name                = "%s"
+  region              = "us-central1"
+  database_version    = "POSTGRES_9_6"
+  deletion_protection = false
+  settings {
+    tier = "db-f1-micro"
+    database_flags {
+      name  = "cloudsql.iam_authentication"
+      value = "on"
+    }
+  }
+}
+
+# TODO: Remove with resolution of https://github.com/hashicorp/terraform-provider-google/issues/14233
+resource "time_sleep" "wait_60_seconds" {
+  depends_on = [google_sql_database_instance.instance]
+  create_duration = "60s"
+}
+
+resource "google_sql_user" "%s" {
+  depends_on = [time_sleep.wait_60_seconds]
+  name     = "%s"
+  type     = "CLOUD_IAM_USER"
+  instance = google_sql_database_instance.instance.name
+  database_roles = %s
+}
+`, instance, strings.Split(username, "@")[0], username, roles)
+}
+
+func testGoogleSqlUser_instanceWithActivationPolicy(instance, activationPolicy string) string {
+	return fmt.Sprintf(`
+resource "google_sql_database_instance" "instance" {
+  name             = "%s"
+  database_version = "MYSQL_5_7"
+  region          = "us-central1"
+  deletion_protection = false
+  settings {
+    tier = "db-f1-micro"
+    availability_type = "ZONAL"
+    activation_policy = "%s"
+  }
+}
+
+resource "google_sql_user" "user" {
+	name     = "admin"
+	instance = google_sql_database_instance.instance.name
+	password = "password"
+  }
+`, instance, activationPolicy)
+}
+
+func testGoogleSqlUser_password_wo(instance, password string) string {
+	return fmt.Sprintf(`
+resource "google_sql_database_instance" "instance" {
+  name                = "%s"
+  region              = "us-central1"
+  database_version    = "MYSQL_5_7"
+  deletion_protection = false
+  settings {
+    tier = "db-f1-micro"
+  }
+}
+
+resource "google_sql_user" "user1" {
+  name     = "admin"
+  instance = google_sql_database_instance.instance.name
+  host     = "gmail.com"
+  password_wo = "%s"
+  password_wo_version = 1
+}
+`, instance, password)
+}
+
+func testGoogleSqlUser_new_password_wo(instance, password string) string {
+	return fmt.Sprintf(`
+resource "google_sql_database_instance" "instance" {
+  name                = "%s"
+  region              = "us-central1"
+  database_version    = "MYSQL_5_7"
+  deletion_protection = false
+  settings {
+    tier = "db-f1-micro"
+  }
+}
+
+resource "google_sql_user" "user1" {
+  name     = "admin"
+  instance = google_sql_database_instance.instance.name
+  host     = "gmail.com"
+  password_wo = "%s"
+  password_wo_version = 2
+}
+`, instance, password)
+}
+
 func testGoogleSqlUser_mysql(instance, password string) string {
 	return fmt.Sprintf(`
 resource "google_sql_database_instance" "instance" {
@@ -340,6 +962,13 @@ resource "google_sql_user" "user2" {
   instance = google_sql_database_instance.instance.name
   host     = "gmail.com"
   password = "hunter2"
+}
+
+resource "google_sql_user" "user3" {
+  name     = "admin"
+  instance = google_sql_database_instance.instance.name
+  host     = "10.0.0.0/24"
+  password = "hunter3"
 }
 `, instance, password)
 }
@@ -535,7 +1164,7 @@ resource "google_project_iam_member" "sa_user" {
 `, instance, instance, instance, instance)
 }
 
-func testGoogleSqlUser_iamGroupUser(instance string) string {
+func testGoogleSqlUser_iamGroupUser(username, instance string) string {
 	return fmt.Sprintf(`
 resource "google_sql_database_instance" "instance" {
   name                = "%s"
@@ -552,9 +1181,41 @@ resource "google_sql_database_instance" "instance" {
 }
 
 resource "google_sql_user" "user" {
-  name     = "iam-group-auth-test-group@google.com"
+  name     = "%s"
   instance = google_sql_database_instance.instance.name
   type     = "CLOUD_IAM_GROUP"
 }
-`, instance)
+`, instance, username)
+}
+
+func testGoogleSqlUser_postgres_iamGroupUser(username, instance string) string {
+	return fmt.Sprintf(`
+resource "google_sql_database_instance" "instance" {
+  name                = "%s"
+  region              = "us-central1"
+  database_version    = "POSTGRES_9_6"
+  deletion_protection = false
+  settings {
+    tier = "db-f1-micro"
+    database_flags {
+      name  = "cloudsql.iam_authentication"
+      value = "on"
+    }
+  }
+}
+
+# TODO: Remove with resolution of https://github.com/hashicorp/terraform-provider-google/issues/14233
+resource "time_sleep" "wait_60_seconds" {
+  depends_on = [google_sql_database_instance.instance]
+
+  create_duration = "60s"
+}
+
+resource "google_sql_user" "user" {
+  depends_on = [time_sleep.wait_60_seconds]
+  name     = "%s"
+  instance = google_sql_database_instance.instance.name
+  type     = "CLOUD_IAM_GROUP"
+}
+`, instance, username)
 }

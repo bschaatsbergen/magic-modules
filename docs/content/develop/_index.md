@@ -1,4 +1,6 @@
 ---
 title: "Develop"
-weight: 20
+weight: 30
+params:
+  bookCollapseSection: true
 ---

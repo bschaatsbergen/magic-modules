@@ -1,0 +1,319 @@
+// To run tests locally please replace the `oauth_token_secret_version` with your secret manager version.
+// More details: https://cloud.google.com/developer-connect/docs/connect-github-repo#before_you_begin
+package gemini_test
+
+import (
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+
+	"github.com/hashicorp/terraform-provider-google/google/acctest"
+	_ "github.com/hashicorp/terraform-provider-google/google/services/developerconnect"
+	"github.com/hashicorp/terraform-provider-google/google/services/gemini"
+	transport_tpg "github.com/hashicorp/terraform-provider-google/google/transport"
+)
+
+// BootstrapSharedCodeRepositoryIndex will create a code repository index
+// if it hasn't been created in the test project.
+//
+// BootstrapSharedCodeRepositoryIndex returns a persistent code repository index
+// for a test or set of tests.
+//
+// Deletion of code repository index takes a few minutes, and creation of it
+// currently takes about half an hour.
+// That is the reason to use the shared code repository indexes for test resources.
+const SharedCodeRepositoryIndexPrefix = "tf-bootstrap-cri-"
+
+func BootstrapSharedCodeRepositoryIndex(t *testing.T, codeRepositoryIndexId, location, kmsKey string, labels map[string]string) string {
+	codeRepositoryIndexId = SharedCodeRepositoryIndexPrefix + codeRepositoryIndexId
+
+	config := transport_tpg.BootstrapConfig(t)
+	if config == nil {
+		t.Fatal("Could not bootstrap config.")
+	}
+
+	log.Printf("[DEBUG] Getting shared code repository index %q", codeRepositoryIndexId)
+
+	getURL := fmt.Sprintf("%sprojects/%s/locations/%s/codeRepositoryIndexes/%s", transport_tpg.BaseUrl(gemini.Product, config), config.Project, location, codeRepositoryIndexId)
+
+	headers := make(http.Header)
+	_, err := transport_tpg.SendRequest(transport_tpg.SendRequestOptions{
+		Config:    config,
+		Method:    "GET",
+		Project:   config.Project,
+		RawURL:    getURL,
+		UserAgent: config.UserAgent,
+		Timeout:   90 * time.Minute,
+		Headers:   headers,
+	})
+
+	// CRI not found responds with 404 not found
+	if err != nil && transport_tpg.IsGoogleApiErrorWithCode(err, 404) {
+		log.Printf("[DEBUG] Code repository index %q not found, bootstrapping", codeRepositoryIndexId)
+		postURL := fmt.Sprintf("%sprojects/%s/locations/%s/codeRepositoryIndexes?codeRepositoryIndexId=%s", transport_tpg.BaseUrl(gemini.Product, config), config.Project, location, codeRepositoryIndexId)
+		obj := make(map[string]interface{})
+		if labels != nil {
+			obj["labels"] = labels
+		}
+		if kmsKey != "" {
+			obj["kmsKey"] = kmsKey
+		}
+
+		headers := make(http.Header)
+		_, err := transport_tpg.SendRequest(transport_tpg.SendRequestOptions{
+			Config:    config,
+			Method:    "POST",
+			Project:   config.Project,
+			RawURL:    postURL,
+			UserAgent: config.UserAgent,
+			Body:      obj,
+			Timeout:   90 * time.Minute,
+			Headers:   headers,
+		})
+		if err != nil {
+			t.Fatalf("Error creating code repository index %q: %s", codeRepositoryIndexId, err)
+		}
+
+		_, err = transport_tpg.SendRequest(transport_tpg.SendRequestOptions{
+			Config:    config,
+			Method:    "GET",
+			Project:   config.Project,
+			RawURL:    getURL,
+			UserAgent: config.UserAgent,
+			Timeout:   90 * time.Minute,
+			Headers:   headers,
+		})
+		if err != nil {
+			t.Fatalf("Error getting code repository index %q: %s", codeRepositoryIndexId, err)
+		}
+	} else if err != nil {
+		t.Fatalf("Error getting code repository index %q: %s", codeRepositoryIndexId, err)
+	}
+
+	return codeRepositoryIndexId
+}
+
+func TestAccGeminiRepositoryGroup_update(t *testing.T) {
+	codeRepositoryIndexId := BootstrapSharedCodeRepositoryIndex(t, "basic", "us-central1", "", map[string]string{"ccfe_debug_note": "terraform_e2e_do_not_delete"})
+	context := map[string]interface{}{
+		"random_suffix":         acctest.RandString(t, 10),
+		"project_id":            os.Getenv("GOOGLE_PROJECT"),
+		"code_repository_index": codeRepositoryIndexId,
+	}
+
+	acctest.VcrTest(t, resource.TestCase{
+		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
+		Steps: []resource.TestStep{
+			{
+				Config: testAccGeminiRepositoryGroup_basic(context),
+			},
+			{
+				ResourceName:            "google_gemini_repository_group.example",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"code_repository_index", "labels", "location", "repository_group_id", "terraform_labels"},
+			},
+			{
+				Config: testAccGeminiRepositoryGroup_update(context),
+			},
+			{
+				ResourceName:            "google_gemini_repository_group.example",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"code_repository_index", "labels", "location", "repository_group_id", "terraform_labels"},
+			},
+		},
+	})
+}
+
+func TestAccGeminiRepositoryGroup_noBootstrap(t *testing.T) {
+	context := map[string]interface{}{
+		"random_suffix": acctest.RandString(t, 10),
+		"project_id":    os.Getenv("GOOGLE_PROJECT"),
+	}
+
+	acctest.VcrTest(t, resource.TestCase{
+		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
+		Steps: []resource.TestStep{
+			{
+				Config: testAccGeminiRepositoryGroup_noBootstrap(context),
+			},
+			{
+				ResourceName:            "google_gemini_repository_group.example_e",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"code_repository_index", "labels", "location", "repository_group_id", "terraform_labels"},
+			},
+		},
+	})
+}
+
+func testAccGeminiRepositoryGroup_basic(context map[string]interface{}) string {
+	return acctest.Nprintf(`
+resource "google_gemini_repository_group" "example" {
+  location = "us-central1"
+  code_repository_index = "%{code_repository_index}"
+  repository_group_id = "tf-test-rg-repository-group-id-%{random_suffix}" 
+  repositories {
+    resource = "projects/%{project_id}/locations/us-central1/connections/${google_developer_connect_connection.github_conn.connection_id}/gitRepositoryLinks/${google_developer_connect_git_repository_link.conn.git_repository_link_id}"
+    branch_pattern = "main"
+  }
+  labels = {"label1": "value1"}
+}
+
+resource "google_developer_connect_git_repository_link" "conn" {
+  git_repository_link_id = "tf-test-repository-conn"
+  parent_connection = google_developer_connect_connection.github_conn.connection_id
+  clone_uri = "https://github.com/CC-R-github-robot/tf-test.git"
+  location = "us-central1"
+  annotations = {}
+}
+
+resource "google_developer_connect_connection" "github_conn" {
+  location = "us-central1"
+  connection_id = "tf-test-cloudaicompanion2-%{random_suffix}"
+  disabled = false
+
+  github_config {
+    github_app = "DEVELOPER_CONNECT"
+    app_installation_id = 54180648
+
+    authorizer_credential {
+      oauth_token_secret_version = "projects/502367051001/secrets/tf-test-cloudaicompanion-github-oauthtoken-c42e5c/versions/1"
+    }
+  }
+}
+`, context)
+}
+func testAccGeminiRepositoryGroup_update(context map[string]interface{}) string {
+	return acctest.Nprintf(`
+resource "google_gemini_repository_group" "example" {
+  location = "us-central1"
+  code_repository_index = "%{code_repository_index}"
+  repository_group_id = "tf-test-rg-repository-group-id-%{random_suffix}"
+  repositories {
+    resource = "projects/%{project_id}/locations/us-central1/connections/${google_developer_connect_connection.github_conn.connection_id}/gitRepositoryLinks/${google_developer_connect_git_repository_link.conn.git_repository_link_id}"
+    branch_pattern = "main"
+  }
+  labels = {"label1": "value1", "label2": "value2"}
+}
+
+resource "google_developer_connect_git_repository_link" "conn" {
+  git_repository_link_id = "tf-test-repository-conn"
+  parent_connection = google_developer_connect_connection.github_conn.connection_id
+  clone_uri = "https://github.com/CC-R-github-robot/tf-test.git"
+  location = "us-central1"
+  annotations = {}
+}
+
+resource "google_developer_connect_connection" "github_conn" {
+  location = "us-central1"
+  connection_id = "tf-test-cloudaicompanion3-%{random_suffix}"
+  disabled = false
+
+  github_config {
+    github_app = "DEVELOPER_CONNECT"
+    app_installation_id = 54180648
+
+    authorizer_credential {
+      oauth_token_secret_version = "projects/502367051001/secrets/tf-test-cloudaicompanion-github-oauthtoken-c42e5c/versions/1"
+    }
+  }
+}
+`, context)
+}
+
+func testAccGeminiRepositoryGroup_noBootstrap(context map[string]interface{}) string {
+	return acctest.Nprintf(`
+resource "google_gemini_code_repository_index" "cri" {
+  labels = {"ccfe_debug_note": "terraform_e2e_should_be_deleted"}
+  location = "us-central1"
+  code_repository_index_id = "tf-test-rg-index-example-%{random_suffix}"
+}
+
+resource "google_gemini_repository_group" "example_a" {
+  location = "us-central1"
+  code_repository_index = google_gemini_code_repository_index.cri.code_repository_index_id
+  repository_group_id = "tf-test-rg-nb-repository-group-id1-%{random_suffix}"
+  repositories {
+    resource = "projects/%{project_id}/locations/us-central1/connections/${google_developer_connect_connection.github_conn.connection_id}/gitRepositoryLinks/${google_developer_connect_git_repository_link.conn.git_repository_link_id}"
+    branch_pattern = "main"
+  }
+  labels = {"label1": "value1"}
+}
+
+resource "google_gemini_repository_group" "example_b" {
+  location = "us-central1"
+  code_repository_index = google_gemini_code_repository_index.cri.code_repository_index_id
+  repository_group_id = "tf-test-rg-nb-repository-group-id2-%{random_suffix}"
+  repositories {
+    resource = "projects/%{project_id}/locations/us-central1/connections/${google_developer_connect_connection.github_conn.connection_id}/gitRepositoryLinks/${google_developer_connect_git_repository_link.conn.git_repository_link_id}"
+    branch_pattern = "main"
+  }
+  labels = {"label1": "value1"}
+}
+
+resource "google_gemini_repository_group" "example_c" {
+  location = "us-central1"
+  code_repository_index = google_gemini_code_repository_index.cri.code_repository_index_id
+  repository_group_id = "tf-test-rg-nb-repository-group-id3-%{random_suffix}"
+  repositories {
+    resource = "projects/%{project_id}/locations/us-central1/connections/${google_developer_connect_connection.github_conn.connection_id}/gitRepositoryLinks/${google_developer_connect_git_repository_link.conn.git_repository_link_id}"
+    branch_pattern = "main"
+  }
+  labels = {"label1": "value1"}
+}
+
+resource "google_gemini_repository_group" "example_d" {
+  location = "us-central1"
+  code_repository_index = google_gemini_code_repository_index.cri.code_repository_index_id
+  repository_group_id = "tf-test-rg-nb-repository-group-id4-%{random_suffix}"
+  repositories {
+    resource = "projects/%{project_id}/locations/us-central1/connections/${google_developer_connect_connection.github_conn.connection_id}/gitRepositoryLinks/${google_developer_connect_git_repository_link.conn.git_repository_link_id}"
+    branch_pattern = "main"
+  }
+  labels = {"label1": "value1"}
+}
+
+resource "google_gemini_repository_group" "example_e" {
+  location = "us-central1"
+  code_repository_index = google_gemini_code_repository_index.cri.code_repository_index_id
+  repository_group_id = "tf-test-rg-nb-repository-group-id5-%{random_suffix}"
+  repositories {
+    resource = "projects/%{project_id}/locations/us-central1/connections/${google_developer_connect_connection.github_conn.connection_id}/gitRepositoryLinks/${google_developer_connect_git_repository_link.conn.git_repository_link_id}"
+    branch_pattern = "main"
+  }
+  labels = {"label1": "value1"}
+}
+
+resource "google_developer_connect_git_repository_link" "conn" {
+  git_repository_link_id = "tf-test-repository-conn"
+  parent_connection = google_developer_connect_connection.github_conn.connection_id
+  clone_uri = "https://github.com/CC-R-github-robot/tf-test.git"
+  location = "us-central1"
+  annotations = {}
+}
+
+resource "google_developer_connect_connection" "github_conn" {
+  location = "us-central1"
+  connection_id = "tf-test-cloudaicompanion1-%{random_suffix}"
+  disabled = false
+
+  github_config {
+    github_app = "DEVELOPER_CONNECT"
+    app_installation_id = 54180648
+
+    authorizer_credential {
+      oauth_token_secret_version = "projects/502367051001/secrets/tf-test-cloudaicompanion-github-oauthtoken-c42e5c/versions/1"
+    }
+  }
+}
+`, context)
+}

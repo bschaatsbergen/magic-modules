@@ -7,6 +7,9 @@ import (
 
 	"github.com/hashicorp/terraform-provider-google/google/acctest"
 	"github.com/hashicorp/terraform-provider-google/google/envvar"
+	"github.com/hashicorp/terraform-provider-google/google/services/kms"
+	_ "github.com/hashicorp/terraform-provider-google/google/services/logging"
+	_ "github.com/hashicorp/terraform-provider-google/google/services/resourcemanager"
 )
 
 func TestAccLoggingFolderSettings_update(t *testing.T) {
@@ -15,8 +18,8 @@ func TestAccLoggingFolderSettings_update(t *testing.T) {
 	context := map[string]interface{}{
 		"org_id":        envvar.GetTestOrgFromEnv(t),
 		"random_suffix": acctest.RandString(t, 10),
-		"original_key":  acctest.BootstrapKMSKeyInLocation(t, "us-central1").CryptoKey.Name,
-		"updated_key":   acctest.BootstrapKMSKeyInLocation(t, "us-east1").CryptoKey.Name,
+		"original_key":  kms.BootstrapKMSKeyInLocation(t, "us-central1").CryptoKey.Name,
+		"updated_key":   kms.BootstrapKMSKeyInLocation(t, "us-east1").CryptoKey.Name,
 	}
 
 	acctest.VcrTest(t, resource.TestCase{
@@ -47,14 +50,6 @@ func TestAccLoggingFolderSettings_update(t *testing.T) {
 
 func testAccLoggingFolderSettings_full(context map[string]interface{}) string {
 	return acctest.Nprintf(`
-resource "google_logging_folder_settings" "example" {
-  disable_default_sink = true
-  folder               = google_folder.my_folder.folder_id
-  kms_key_name         = "%{original_key}"
-  storage_location     = "us-central1"
-  depends_on           = [ google_kms_crypto_key_iam_member.iam ]
-}
-
 resource "google_folder" "my_folder" {
   display_name = "tf-test-folder-%{random_suffix}"
   parent       = "organizations/%{org_id}"
@@ -65,24 +60,73 @@ data "google_logging_folder_settings" "settings" {
   folder = google_folder.my_folder.folder_id
 }
 
-resource "google_kms_crypto_key_iam_member" "iam" {
+resource "google_kms_crypto_key_iam_member" "iam_folder" {
   crypto_key_id = "%{original_key}"
   role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
   member        = "serviceAccount:${data.google_logging_folder_settings.settings.kms_service_account_id}"
+}
+
+data "google_logging_organization_settings" "settings" {
+  organization = "%{org_id}"
+  depends_on   = [
+    google_kms_crypto_key_iam_member.iam_folder
+  ]
+}
+
+resource "google_kms_crypto_key_iam_member" "iam_org" {
+  crypto_key_id = "%{original_key}"
+  role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
+  member        = "serviceAccount:${data.google_logging_organization_settings.settings.kms_service_account_id}"
+}
+
+resource "google_logging_folder_settings" "example" {
+  disable_default_sink = true
+  folder               = google_folder.my_folder.folder_id
+  kms_key_name         = "%{original_key}"
+  storage_location     = "us-central1"
+  depends_on   = [
+    google_kms_crypto_key_iam_member.iam_org
+  ]
 }
 `, context)
 }
 
 func testAccLoggingFolderSettings_onlyRequired(context map[string]interface{}) string {
 	return acctest.Nprintf(`
-resource "google_logging_folder_settings" "example" {
-  folder = google_folder.my_folder.folder_id
-}
-
 resource "google_folder" "my_folder" {
   display_name = "tf-test-folder-%{random_suffix}"
   parent       = "organizations/%{org_id}"
   deletion_protection = false
+}
+
+data "google_logging_folder_settings" "settings" {
+  folder = google_folder.my_folder.folder_id
+}
+
+resource "google_kms_crypto_key_iam_member" "iam_folder" {
+  crypto_key_id = "%{original_key}"
+  role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
+  member        = "serviceAccount:${data.google_logging_folder_settings.settings.kms_service_account_id}"
+}
+
+data "google_logging_organization_settings" "settings" {
+  organization = "%{org_id}"
+  depends_on   = [
+    google_kms_crypto_key_iam_member.iam_folder
+  ]
+}
+
+resource "google_kms_crypto_key_iam_member" "iam_org" {
+  crypto_key_id = "%{original_key}"
+  role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
+  member        = "serviceAccount:${data.google_logging_organization_settings.settings.kms_service_account_id}"
+}
+
+resource "google_logging_folder_settings" "example" {
+  folder       = google_folder.my_folder.folder_id
+  depends_on   = [
+    google_kms_crypto_key_iam_member.iam_org
+  ]
 }
 `, context)
 }

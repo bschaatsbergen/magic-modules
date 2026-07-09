@@ -1,4 +1,4 @@
-# Copyright 2023 Google Inc.
+# Copyright 2024 Google Inc.
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -11,60 +11,69 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
---- !ruby/object:Api::Resource
-name: 'VPCSCConfig'
-description: |-
-  The Artifact Registry VPC SC config that applies to a Project.
-references: !ruby/object:Api::Resource::ReferenceLinks
-  api: 'https://cloud.google.com/artifact-registry/docs/reference/rest/v1/VPCSCConfig'
-min_version: beta
-docs: !ruby/object:Provider::Terraform::Docs
+---
+name: VPCSCConfig
+api_resource_type_kind: VpcscConfig
+description: The Artifact Registry VPC SC config that applies to a Project.
+references:
+  guides:
+  api: https://cloud.google.com/artifact-registry/docs/reference/rest/v1/VPCSCConfig
+docs:
   note: |-
     VPC SC configs are automatically created for a given location. Creating a
     resource of this type will acquire and update the resource that already
     exists at the location. Deleting this resource will remove the config from
     your Terraform state but leave the resource as is.
-base_url: 'projects/{{project}}/locations/{{location}}/vpcscConfig'
-self_link: 'projects/{{project}}/locations/{{location}}/vpcscConfig'
-create_url: 'projects/{{project}}/locations/{{location}}/vpcscConfig'
-create_verb: :PATCH
-update_verb: :PATCH
-skip_delete: true
-examples:
-  - !ruby/object:Provider::Terraform::Examples
-    # Requires VPC SC Policy configured on organization
-    skip_test: true
-    name: 'artifact_registry_vpcsc_config'
-    primary_resource_id: 'my-config'
-autogen_async: false
-async: !ruby/object:Api::OpAsync
-  actions: []
+base_url: projects/{{project}}/locations/{{location}}/vpcscConfig
+min_version: beta
+self_link: projects/{{project}}/locations/{{location}}/vpcscConfig
+create_url: projects/{{project}}/locations/{{location}}/vpcscConfig
+create_verb: PATCH
+update_verb: PATCH
+timeouts:
+  insert_minutes: 20
+  update_minutes: 20
+  delete_minutes: 20
+async:
+  type: OpAsync
   # necessary to compile
-  operation: !ruby/object:Api::OpAsync::Operation
+  operation:
     base_url: '{{op_id}}'
-custom_code: !ruby/object:Provider::Terraform::CustomCode
-  encoder: templates/terraform/encoders/location_from_region.go.erb
+  actions: [""]
+  result:
+    resource_inside_response: false
+exclude_delete: true
+custom_code:
+  encoder: templates/terraform/encoders/location_from_region.go.tmpl
+samples:
+  - name: artifact_registry_vpcsc_config
+    primary_resource_id: my-config
+    # Requires VPC SC Policy configured on organization
+    exclude_test: true
+    steps:
+      - name: artifact_registry_vpcsc_config
 parameters:
-  - !ruby/object:Api::Type::String
-    name: location
-    required: false
-    immutable: true
-    url_param_only: true
-    default_from_api: true
+  - name: location
+    type: String
     description: |
       The name of the location this config is located in.
-  - !ruby/object:Api::Type::String
-    name: name
-    output: true
+    min_version: beta
+    url_param_only: true
+    required: false
+    immutable: true
+    default_from_api: true
+  - name: name
+    type: String
     description: |-
       The name of the project's VPC SC Config.
       Always of the form: projects/{project}/location/{location}/vpcscConfig
-properties:
-  - !ruby/object:Api::Type::Enum
-    name: vpcscPolicy
     min_version: beta
-    description: |-
-      The VPC SC policy for project and location.
-    values:
-      - :DENY
-      - :ALLOW
+    output: true
+properties:
+  - name: vpcscPolicy
+    type: Enum
+    description: The VPC SC policy for project and location.
+    min_version: beta
+    enum_values:
+      - DENY
+      - ALLOW

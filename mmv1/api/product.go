@@ -14,66 +14,86 @@
 package api
 
 import (
+	"fmt"
 	"log"
+	"reflect"
+	"regexp"
 	"strings"
-
-	"gopkg.in/yaml.v3"
+	"unicode"
 
 	"github.com/GoogleCloudPlatform/magic-modules/mmv1/api/product"
 	"github.com/GoogleCloudPlatform/magic-modules/mmv1/google"
 	"golang.org/x/exp/slices"
+	"gopkg.in/yaml.v3"
 )
 
 // Represents a product to be managed
 type Product struct {
-	NamedObject `yaml:",inline"`
-
-	// Inherited:
 	// The name of the product's API capitalised in the appropriate places.
 	// This isn't just the API name because it doesn't meaningfully separate
 	// words in the api name - "accesscontextmanager" vs "AccessContextManager"
 	// Example inputs: "Compute", "AccessContextManager"
-	// Name string
+	Name string
+
+	// This is the name of the package path relative to mmv1 root repo
+	PackagePath string `yaml:"package_path,omitempty"`
+
+	// original value of :name before the provider override happens
+	// same as :name if not overridden in provider
+	ApiName string `yaml:"api_name,omitempty"`
 
 	// Display Name: The full name of the GCP product; eg "Cloud Bigtable"
-	DisplayName string `yaml:"display_name"`
+	DisplayName string `yaml:"display_name,omitempty"`
 
-	Objects []*Resource
+	Objects []*Resource `yaml:"objects,omitempty"`
 
 	// The list of permission scopes available for the service
 	// For example: `https://www.googleapis.com/auth/compute`
-
 	Scopes []string
 
 	// The API versions of this product
-
 	Versions []*product.Version
 
-	// The base URL for the service API endpoint
-	// For example: `https://www.googleapis.com/compute/v1/`
+	// The service name from CAI asset name, e.g. bigtable.googleapis.com.
+	CaiAssetService string `yaml:"cai_asset_service,omitempty"`
 
-	BaseUrl string `yaml:"base_url"`
+	// CaiResourceType of resources that already have an AssetType constant defined in the product.
+	ResourcesWithCaiAssetType map[string]struct{} `yaml:"-"`
 
 	// A function reference designed for the rare case where you
 	// need to use retries in operation calls. Used for the service api
 	// as it enables itself (self referential) and can result in occasional
 	// failures on operation_get. see github.com/hashicorp/terraform-provider-google/issues/9489
+	OperationRetry string `yaml:"operation_retry,omitempty"`
 
-	OperationRetry string `yaml:"operation_retry"`
+	Async *Async `yaml:"async,omitempty"`
 
-	Async *Async
+	LegacyName string `yaml:"legacy_name,omitempty"`
 
-	LegacyName string `yaml:"legacy_name"`
+	ClientName string `yaml:"client_name,omitempty"`
 
-	ClientName string `yaml:"client_name"`
+	// RepByDefault is if this product should default to REP endpoints if
+	// available. Changing this requires REP to be supported in *ALL* regions
+	RepByDefault bool `yaml:"rep_by_default,omitempty"`
+
+	// The version of the product which is currently being generated.
+	Version *product.Version `yaml:"-"`
+
+	// The compiler to generate the downstream files, for example "terraformgoogleconversion-codegen".
+	Compiler string `yaml:"-"`
+
+	// ImportPath contains the prefix used for importing packages in generated files.
+	ImportPath string `yaml:"-"`
+
+	// Runtime contains information about the currently-running generation process.
+	Runtime Runtime `yaml:"-"`
 }
 
-func (p *Product) UnmarshalYAML(n *yaml.Node) error {
+func (p *Product) UnmarshalYAML(value *yaml.Node) error {
 	type productAlias Product
 	aliasObj := (*productAlias)(p)
 
-	err := n.Decode(&aliasObj)
-	if err != nil {
+	if err := value.Decode(aliasObj); err != nil {
 		return err
 	}
 
@@ -84,31 +104,32 @@ func (p *Product) UnmarshalYAML(n *yaml.Node) error {
 }
 
 func (p *Product) Validate() {
-	// TODO Q2 Rewrite super
-	//     super
+	if len(p.Name) == 0 {
+		log.Fatalf("Missing `name` for product")
+	}
+
+	// product names must start with a capital
+	for i, ch := range p.Name {
+		if !unicode.IsUpper(ch) {
+			log.Fatalf("product name `%s` must start with a capital letter.", p.Name)
+		}
+		if i == 0 {
+			break
+		}
+	}
+
+	if len(p.Scopes) == 0 {
+		log.Fatalf("Missing `scopes` for product %s", p.Name)
+	}
+
+	if p.Versions == nil {
+		log.Fatalf("Missing `versions` for product %s", p.Name)
+	}
+
+	for _, v := range p.Versions {
+		v.Validate(p.Name)
+	}
 }
-
-// def validate
-//     super
-//     set_variables @objects, :__product
-
-//     // name comes from Named, and product names must start with a capital
-//     caps = ('A'..'Z').to_a
-//     unless caps.include? @name[0]
-//       raise "product name `//{@name}` must start with a capital letter."
-//     end
-
-//     check :display_name, type: String
-//     check :objects, type: Array, item_type: Api::Resource
-//     check :scopes, type: Array, item_type: String, required: true
-//     check :operation_retry, type: String
-
-//     check :async, type: Api::Async
-//     check :legacy_name, type: String
-//     check :client_name, type: String
-
-//     check :versions, type: Array, item_type: Api::Product::Version, required: true
-//   end
 
 // ====================
 // Custom Setters
@@ -125,6 +146,25 @@ func (p *Product) SetDisplayName() {
 	if p.DisplayName == "" {
 		p.DisplayName = google.SpaceSeparated(p.Name)
 	}
+}
+
+func (p *Product) SetCompiler(t string) {
+	switch t {
+	case "tgc":
+		p.Compiler = "terraformgoogleconversion-codegen"
+	case "tgc_next":
+		p.Compiler = "terraformgoogleconversionnext-codegen"
+	case "tgc_cai2hcl":
+		p.Compiler = "caitoterraformconversion-codegen"
+	case "terraform", "oics", "bics":
+		p.Compiler = "terraform-codegen"
+	default:
+		p.Compiler = fmt.Sprintf("%s-codegen", strings.ToLower(t))
+	}
+}
+
+func (p Product) IsTgcCompiler() bool {
+	return p.Compiler == "terraformgoogleconversionnext-codegen"
 }
 
 // ====================
@@ -210,10 +250,6 @@ func (p *Product) ExistsAtVersion(name string) bool {
 	return false
 }
 
-func (p *Product) SetPropertiesBasedOnVersion(version *product.Version) {
-	p.BaseUrl = version.BaseUrl
-}
-
 func (p *Product) TerraformName() string {
 	if p.LegacyName != "" {
 		return google.Underscore(p.LegacyName)
@@ -221,14 +257,41 @@ func (p *Product) TerraformName() string {
 	return google.Underscore(p.Name)
 }
 
+func (p *Product) ServiceBaseUrl() string {
+	if p.Version.CaiBaseUrl != "" {
+		return p.Version.CaiBaseUrl
+	}
+	return p.Version.BaseUrl
+}
+
+func (p *Product) ServiceName() string {
+	parts := strings.Split(p.ServiceBaseUrl(), "/")
+	// remove location prefix if present
+	trimmed, _ := strings.CutPrefix(parts[2], "{{location}}-")
+	return trimmed
+}
+
+var versionRegexp = regexp.MustCompile(`^v[0-9]+|beta`)
+
+func (p *Product) ServiceVersion() string {
+	parts := strings.Split(p.ServiceBaseUrl(), "/")
+	for i := len(parts) - 1; i >= 0; i-- {
+		part := parts[i]
+		// stop when we get to the domain name
+		if strings.Contains(part, ".com") {
+			break
+		}
+		v := versionRegexp.FindString(part)
+		if v != "" {
+			return part
+		}
+	}
+	return ""
+}
+
 // ====================
 // Debugging Methods
 // ====================
-
-//   def to_s
-//     // relies on the custom to_json definitions
-//     JSON.pretty_generate(self)
-//   end
 
 // Prints a dot notation path to where the field is nested within the parent
 // object when called on a property. eg: parent.meta.label.foo
@@ -237,19 +300,116 @@ func (p Product) Lineage() string {
 	return p.Name
 }
 
-//   def to_json(opts = nil)
-//     json_out = {}
+func Merge(self, otherObj reflect.Value, version string) {
+	selfObj := reflect.Indirect(self)
 
-//     instance_variables.each do |v|
-//       if v == :@objects
-//         json_out['@resources'] = objects.to_h { |o| [o.name, o] }
-//       elsif instance_variable_get(v) == false || instance_variable_get(v).nil?
-//         // ignore false or missing because omitting them cleans up result
-//         // and both are the effective defaults of their types
-//       else
-//         json_out[v] = instance_variable_get(v)
-//       end
-//     end
+	// Skip merge if otherObj targets a higher version than what is being generated
+	for i := 0; i < otherObj.NumField(); i++ {
+		if otherObj.Type().Field(i).Name == "MinVersion" {
+			for j := slices.Index(product.ORDER, version) + 1; j < len(product.ORDER); j++ {
+				if otherObj.Field(i).String() == product.ORDER[j] {
+					return
+				}
+			}
+		}
+	}
 
-//     JSON.generate(json_out, opts)
-//   end
+	for i := 0; i < selfObj.NumField(); i++ {
+
+		// skip unexported fields
+		if !selfObj.Field(i).CanSet() {
+			continue
+		}
+
+		// skip if the override is the "empty" value
+		emptyOverrideValue := reflect.DeepEqual(reflect.Zero(otherObj.Field(i).Type()).Interface(), otherObj.Field(i).Interface())
+
+		if emptyOverrideValue && selfObj.Type().Field(i).Name != "Required" {
+			continue
+		}
+
+		if selfObj.Field(i).Kind() == reflect.Slice {
+			DeepMerge(selfObj.Field(i), otherObj.Field(i), version)
+		} else if selfObj.Field(i).Kind() == reflect.Pointer {
+			// merge the objects that are being pointed to, if both exist (namely, ItemTypes)
+			if reflect.Indirect(selfObj.Field(i)).IsValid() && reflect.Indirect(otherObj.Field(i)).IsValid() {
+				Merge(selfObj.Field(i), reflect.Indirect(otherObj.Field(i)), version)
+			} else {
+				selfObj.Field(i).Set(otherObj.Field(i))
+			}
+		} else {
+			selfObj.Field(i).Set(otherObj.Field(i))
+		}
+	}
+}
+
+func DeepMerge(arr1, arr2 reflect.Value, version string) {
+	if arr1.Len() == 0 {
+		arr1.Set(arr2)
+		return
+	}
+	if arr2.Len() == 0 {
+		return
+	}
+
+	// Scopes is an array of standard strings. In which case return the
+	// version in the overrides. This allows scopes to be removed rather
+	// than allowing for a merge of the two arrays
+	if arr1.Index(0).Kind() == reflect.String {
+		arr1.Set(arr2)
+		return
+	}
+
+	// Merge any elements that exist in both
+	for i := 0; i < arr1.Len(); i++ {
+		currentVal := arr1.Index(i)
+		pointer := currentVal.Kind() == reflect.Ptr
+		if pointer {
+			currentVal = currentVal.Elem()
+		}
+		var otherVal reflect.Value
+		for j := 0; j < arr2.Len(); j++ {
+			currentName := currentVal.FieldByName("Name").Interface()
+			tempOtherVal := arr2.Index(j)
+			if pointer {
+				tempOtherVal = tempOtherVal.Elem()
+			}
+			otherName := tempOtherVal.FieldByName("Name").Interface()
+
+			if otherName == currentName {
+				otherVal = tempOtherVal
+				break
+			}
+		}
+		if otherVal.IsValid() {
+			Merge(currentVal, otherVal, version)
+		}
+	}
+
+	// Add any elements of arr2 that don't exist in arr1
+	for i := 0; i < arr2.Len(); i++ {
+		otherVal := arr2.Index(i)
+		pointer := otherVal.Kind() == reflect.Ptr
+		if pointer {
+			otherVal = otherVal.Elem()
+		}
+
+		found := false
+		for j := 0; j < arr1.Len(); j++ {
+			currentVal := arr1.Index(j)
+			if pointer {
+				currentVal = currentVal.Elem()
+			}
+			currentName := currentVal.FieldByName("Name").Interface()
+			otherName := otherVal.FieldByName("Name").Interface()
+
+			if otherName == currentName {
+				found = true
+				break
+			}
+		}
+		if !found {
+			arr1.Set(reflect.Append(arr1, arr2.Index(i)))
+		}
+	}
+}

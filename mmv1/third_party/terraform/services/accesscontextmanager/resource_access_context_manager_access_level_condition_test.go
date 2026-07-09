@@ -10,6 +10,9 @@ import (
 
 	"github.com/hashicorp/terraform-provider-google/google/acctest"
 	"github.com/hashicorp/terraform-provider-google/google/envvar"
+	"github.com/hashicorp/terraform-provider-google/google/services/accesscontextmanager"
+	_ "github.com/hashicorp/terraform-provider-google/google/services/compute"
+	_ "github.com/hashicorp/terraform-provider-google/google/services/resourcemanager"
 	"github.com/hashicorp/terraform-provider-google/google/tpgresource"
 	transport_tpg "github.com/hashicorp/terraform-provider-google/google/transport"
 )
@@ -25,7 +28,7 @@ func testAccAccessContextManagerAccessLevelCondition_basicTest(t *testing.T) {
 	vpcName := fmt.Sprintf("test-vpc-%s", acctest.RandString(t, 10))
 
 	expected := map[string]interface{}{
-		"members": []interface{}{"user:test@google.com", "user:test2@google.com", fmt.Sprintf("serviceAccount:%s@%s.iam.gserviceaccount.com", serviceAccountName, project)},
+		"members": []interface{}{fmt.Sprintf("serviceAccount:%s@%s.iam.gserviceaccount.com", serviceAccountName, project)},
 		"devicePolicy": map[string]interface{}{
 			"requireCorpOwned": true,
 			"osConstraints": []interface{}{
@@ -66,7 +69,7 @@ func testAccCheckAccessContextManagerAccessLevelConditionPresent(t *testing.T, n
 		}
 
 		config := acctest.GoogleProviderConfig(t)
-		url, err := tpgresource.ReplaceVarsForTest(config, rs, "{{AccessContextManagerBasePath}}{{access_level}}")
+		url, err := tpgresource.ReplaceVarsForTest(config, rs, transport_tpg.BaseUrl(accesscontextmanager.Product, config)+"{{access_level}}")
 		if err != nil {
 			return err
 		}
@@ -98,8 +101,7 @@ func testAccCheckAccessContextManagerAccessLevelConditionDestroyProducer(t *test
 			}
 
 			config := acctest.GoogleProviderConfig(t)
-
-			url, err := tpgresource.ReplaceVarsForTest(config, rs, "{{AccessContextManagerBasePath}}{{access_level}}")
+			url, err := tpgresource.ReplaceVarsForTest(config, rs, transport_tpg.BaseUrl(accesscontextmanager.Product, config)+"{{access_level}}")
 			if err != nil {
 				return err
 			}
@@ -164,7 +166,7 @@ resource "google_compute_network" "vpc_network" {
 
 resource "google_access_context_manager_access_level_condition" "access-level-condition" {
   access_level = google_access_context_manager_access_level.test-access.name
-  members = ["user:test@google.com", "user:test2@google.com", "serviceAccount:${google_service_account.created-later.email}"]
+  members = ["serviceAccount:${google_service_account.created-later.email}"]
   negate = false
   device_policy {
     require_screen_lock = false

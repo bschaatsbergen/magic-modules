@@ -127,3 +127,132 @@ func TestProductVersionObjOrClosest(t *testing.T) {
 		})
 	}
 }
+
+func TestProductServiceName(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		description string
+		obj         Product
+		expected    string
+	}{
+		{
+			description: "standard BaseUrl",
+			obj: Product{
+				Version: &product.Version{
+					BaseUrl: "https://abc.googleapis.com/beta/",
+				},
+			},
+			expected: "abc.googleapis.com",
+		},
+		{
+			description: "BaseUrl with locational subdomain",
+			obj: Product{
+				Version: &product.Version{
+					BaseUrl: "https://{{location}}-abc.googleapis.com/ga/",
+				},
+			},
+			expected: "abc.googleapis.com",
+		},
+		{
+			description: "BaseUrl and CaiBaseUrl",
+			obj: Product{
+				Version: &product.Version{
+					BaseUrl:    "https://abc.googleapis.com/ga/",
+					CaiBaseUrl: "https://def.googleapis.com/ga/",
+				},
+			},
+			expected: "def.googleapis.com",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+
+		t.Run(tc.description, func(t *testing.T) {
+			t.Parallel()
+
+			if got, want := tc.obj.ServiceName(), tc.expected; got != want {
+				t.Errorf("expected %v to be %v", got, want)
+			}
+		})
+	}
+}
+
+func TestProductServiceVersion(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		description string
+		obj         Product
+		expected    string
+	}{
+		{
+			description: "standard BaseUrl",
+			obj: Product{
+				Version: &product.Version{
+					BaseUrl: "https://abc.googleapis.com/v1/",
+				},
+			},
+			expected: "v1",
+		},
+		{
+			description: "BaseUrl without trailing /",
+			obj: Product{
+				Version: &product.Version{
+					BaseUrl: "https://abc.googleapis.com/v1",
+				},
+			},
+			expected: "v1",
+		},
+		{
+			description: "BaseUrl with version of beta",
+			obj: Product{
+				Version: &product.Version{
+					BaseUrl: "https://abc.googleapis.com/beta/",
+				},
+			},
+			expected: "beta",
+		},
+		{
+			description: "BaseUrl without valid version",
+			obj: Product{
+				Version: &product.Version{
+					BaseUrl: "https://abc.googleapis.com/other/",
+				},
+			},
+			expected: "",
+		},
+		{
+			description: "BaseUrl with additional value in path",
+			obj: Product{
+				Version: &product.Version{
+					BaseUrl: "https://abc.googleapis.com/compute/v1/",
+				},
+			},
+			expected: "v1",
+		},
+		{
+			description: "standard BaseUrl",
+			obj: Product{
+				Version: &product.Version{
+					BaseUrl:    "https://{{location}}-abc.googleapis.com/",
+					CaiBaseUrl: "https://abc.googleapis.com/v1/",
+				},
+			},
+			expected: "v1",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+
+		t.Run(tc.description, func(t *testing.T) {
+			t.Parallel()
+
+			if got, want := tc.obj.ServiceVersion(), tc.expected; got != want {
+				t.Errorf("expected %v to be %v", got, want)
+			}
+		})
+	}
+}

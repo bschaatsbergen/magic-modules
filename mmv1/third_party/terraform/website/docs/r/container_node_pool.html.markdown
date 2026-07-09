@@ -111,6 +111,8 @@ resource "google_container_cluster" "primary" {
 * `autoscaling` - (Optional) Configuration required by cluster autoscaler to adjust
     the size of the node pool to the current cluster usage. Structure is [documented below](#nested_autoscaling).
 
+* `ignore_node_count_changes` - (Optional) Whether to ignore external changes (drift) to the node count (e.g. from GKE autoscaling). Setting this to `true` skips querying Compute Engine Instance Group Managers (IGMs) to determine the current node count on read, which can save API quota and speed up plans on large clusters. Unlike Terraform core's `lifecycle { ignore_changes = [node_count] }`, this allows configuration-driven scaling updates in your HCL while still ignoring runtime autoscaling drift.
+
 * `initial_node_count` - (Optional) The initial number of nodes for the pool. In
     regional or multi-zonal clusters, this is the number of nodes per zone. Changing
     this will force recreation of the resource. WARNING: Resizing your node pool manually
@@ -144,8 +146,9 @@ cluster.
 * `name_prefix` - (Optional) Creates a unique name for the node pool beginning
     with the specified prefix. Conflicts with `name`.
 
-* `node_config` - (Optional) Parameters used in creating the node pool. See
-    [google_container_cluster](container_cluster.html#nested_node_config) for schema.
+* `node_config` - (Optional) Parameters used in creating the node pool. Structure is [documented below](#nested_node_config). See [google_container_cluster](container_cluster.html#nested_node_config) for exact schema.
+
+* `taint_config` - (Optional) Taint configuration for the node pool. Structure is [documented below](#nested_taint_config).
 
 * `network_config` - (Optional) The network configuration of the pool. Such as
     configuration for [Adding Pod IP address ranges](https://cloud.google.com/kubernetes-engine/docs/how-to/multi-pod-cidr)) to the node pool. Or enabling private nodes. Structure is
@@ -153,6 +156,10 @@ cluster.
 
 * `node_count` - (Optional) The number of nodes per instance group. This field can be used to
     update the number of nodes per instance group but should not be used alongside `autoscaling`.
+
+* `node_drain_config` - (Optional) The node drain configuration of the pool. Structure is [documented below](#nested_node_drain_config).
+
+* `maintenance_policy` - (Optional) The maintenance policy of the pool. Structure is [documented below](#nested_maintenance_policy).
 
 * `project` - (Optional) The ID of the project in which to create the node pool. If blank,
     the provider-configured project will be used.
@@ -173,8 +180,12 @@ cluster.
 * `queued_provisioning` - (Optional) Specifies node pool-level settings of queued provisioning.
     Structure is [documented below](#nested_queued_provisioning).
 
-* `reservation_affinity` (Optional) The configuration of the desired reservation which instances could take capacity from.
-    Structure is [documented below](#nested_reservation_affinity).
+* `deletion_policy` - (Optional) Whether Terraform will be prevented from destroying the resource. Defaults to "DELETE".
+    When a 'terraform destroy' or 'terraform apply' would delete the resource,
+    the command will fail if this field is set to "PREVENT" in Terraform state.
+    When set to "ABANDON", the command will remove the resource from Terraform
+    management without updating or deleting the resource in the API.
+    When set to "DELETE", deleting the resource is allowed.
 
 <a name="nested_autoscaling"></a>The `autoscaling` block supports (either total or per zone limits are required):
 
@@ -224,6 +235,10 @@ cluster.
 
 * `network_performance_config` - (Optional) Network bandwidth tier configuration. Structure is [documented below](#network_performance_config).
 
+* `subnetwork` - (Optional) The subnetwork path for the node pool. Format: `projects/{project}/regions/{region}/subnetworks/{subnetwork}`. If the cluster is associated with multiple subnetworks, the subnetwork for the node pool is picked based on the IP utilization during node pool creation and is immutable
+
+* `accelerator_network_profile` (Optional, (../guides/provider_versions.html.markdown)) - Specifies the accelerator network profile for nodes in this node pool. Setting to `"auto"` enables GKE to automatically configure high-performance networking settings for nodes with accelerators (like GPUs). GKE manages the underlying resources (like VPCs and subnets) for this configuration.
+
 <a name="nested_additional_node_network_configs"></a>The `additional_node_network_configs` block supports:
 
 * `network` - Name of the VPC where the additional interface belongs.
@@ -240,11 +255,29 @@ cluster.
 
 <a name="network_performance_config"></a>The `network_performance_config` block supports:
 
-* `total_egress_bandwidth_tier` (Required) - Specifies the total network bandwidth tier for the NodePool.
+* `total_egress_bandwidth_tier` (Required) - Specifies the total network bandwidth tier for the NodePool. [Valid values](https://cloud.google.com/kubernetes-engine/docs/reference/rest/v1/projects.locations.clusters.nodePools#NodePool.Tier) include: "TIER_1" and "TIER_UNSPECIFIED".
 
 <a name="pod_cidr_overprovision_config"></a>The `pod_cidr_overprovision_config` block supports:
 
 * `disabled` (Required) - Whether pod cidr overprovision is disabled.
+
+<a name="nested_node_drain_config"></a>The `node_drain_config` block supports:
+
+* `grace_termination_duration` - (Optional) The duration of the grace termination period for node drain.
+
+* `pdb_timeout_duration` - (Optional) The duration of the PDB timeout period for node drain.
+
+* `respect_pdb_during_node_pool_deletion` - (Optional) Whether to respect PodDisruptionBudget policy during node pool deletion.
+
+<a name="nested_maintenance_policy"></a>The `maintenance_policy` block supports:
+
+* `exclusion_until_end_of_support` - (Optional) When enabled, the node pool will not be automatically upgraded by GKE until the node pool version's end of support date. Structure is [documented below](#nested_exclusion_until_end_of_support).
+
+<a name="nested_exclusion_until_end_of_support"></a>The `exclusion_until_end_of_support` block supports:
+
+* `enabled` - (Optional) When true, the node pool will not be automatically upgraded by GKE until the node pool version's end of support date.
+* `start_time` - (Optional) The time when the maintenance policy is first created.
+* `end_time` - (Optional) The time when the maintenance policy is no longer effective, i.e., the node pool version's end of support date.
 
 <a name="nested_upgrade_settings"></a>The `upgrade_settings` block supports:
 
@@ -265,10 +298,15 @@ cluster.
 
 <a name="nested_blue_green_settings"></a>The `blue_green_settings` block supports:
 
-* `standard_rollout_policy` - (Required) Specifies the standard policy settings for blue-green upgrades.
+-> Note: Exactly one of `standard_rollout_policy` or `autoscaled_rollout_policy` must be set.
+
+* `standard_rollout_policy` - (Optional) Specifies the standard policy settings for blue-green upgrades.
     * `batch_percentage` - (Optional) Percentage of the blue pool nodes to drain in a batch.
     * `batch_node_count` - (Optional) Number of blue nodes to drain in a batch.
     * `batch_soak_duration` - (Optionial) Soak time after each batch gets drained.
+
+* `autoscaled_rollout_policy` - (Optional, [Beta](../guides/provider_versions.html.markdown)) Autoscaled rollout policy for blue-green upgrade.
+    * `wait_for_drain_duration` - (Optional) Time in seconds to wait after cordoning the blue pool before draining the nodes.
 
 * `node_pool_soak_duration` - (Optional) Time needed after draining the entire blue pool.
     After this period, the blue pool will be cleaned up.
@@ -283,7 +321,7 @@ cluster.
   The resource policy must be in the same project and region as the node pool.
   If not found, InvalidArgument error is returned.
 
-* `tpu_topology` - (Optional) The [TPU placement topology](https://cloud.google.com/tpu/docs/types-topologies#tpu_topologies) for pod slice node pool.
+* `tpu_topology` - (Optional) The [TPU topology](https://cloud.google.com/kubernetes-engine/docs/concepts/plan-tpus#topology) like `"2x4"` or `"2x2x2"`.
 
 <a name="nested_queued_provisioning"></a> The `queued_provisioning` block supports:
 
@@ -296,10 +334,29 @@ cluster.
 
     * `"UNSPECIFIED"`: Default value. This should not be used.
     * `"NO_RESERVATION"`: Do not consume from any reserved capacity.
-    * `"ANY_RESERVATION"`: Consume any reservation available.
+    * `"ANY_RESERVATION"`: Consume any non-specific reservation available, with a fallback to on-demand capacity in case of none reservaition being claimable.
     * `"SPECIFIC_RESERVATION"`: Must consume from a specific reservation. Must specify key value fields for specifying the reservations.
+    * `"ANY_RESERVATION_THEN_FAIL"`: Consume any non-specific reservation available, without a fallback to on-demand capacity in case of none reservaition being claimable.
 * `key` (Optional) The label key of a reservation resource. To target a SPECIFIC_RESERVATION by name, specify "compute.googleapis.com/reservation-name" as the key and specify the name of your reservation as its value.
 * `values` (Optional) The list of label values of reservation resources. For example: the name of the specific reservation when using a key of "compute.googleapis.com/reservation-name"
+
+<a name="nested_node_config"></a>The `node_config` block supports:
+
+* `kubelet_config` - (Optional) Node kubelet configs. Structure is [documented below](#nested_kubelet_config).
+
+* `taint_config` - (Optional) Taint configuration for the node pool. Structure is [documented below](#nested_node_config_taint_config).
+
+<a name="nested_node_config_taint_config"></a>The `taint_config` block supports:
+
+* `architecture_taint_behavior` - (Optional) Specifies the behavior for applying architecture taints to node pool nodes. Valid values are `ARCHITECTURE_TAINT_BEHAVIOR_UNSPECIFIED`, `NONE`, or `ARM`.
+
+<a name="nested_taint_config"></a>The `taint_config` block supports:
+
+* `architecture_taint_behavior` - (Optional) The taint behavior to be applied to the nodes based on the architecture.
+    Accepted values are:
+    * `ARCHITECTURE_TAINT_BEHAVIOR_UNSPECIFIED`: Default value. This should not be used.
+    * `NONE`: Do not apply any taints based on architecture.
+    * `ARM`: Apply ARM taint to the nodes.
 
 ## Attributes Reference
 
@@ -317,9 +374,15 @@ In addition to the arguments listed above, the following computed attributes are
 `google_container_node_pool` provides the following
 [Timeouts](https://developer.hashicorp.com/terraform/plugin/sdkv2/resources/retries-and-customizable-timeouts) configuration options: configuration options:
 
-- `create` - (Default `30 minutes`) Used for adding node pools
-- `update` - (Default `30 minutes`) Used for updates to node pools
-- `delete` - (Default `30 minutes`) Used for removing node pools.
+- `create` - (Default `60 minutes`) Used for adding node pools
+- `update` - (Default `60 minutes`) Used for updates to node pools
+- `delete` - (Default `60 minutes`) Used for removing node pools.
+
+<a name="nested_kubelet_config"></a>The `kubelet_config` block supports:
+
+* `shutdown_grace_period_seconds` - (Optional) The grace period (in seconds) to use during a graceful node shutdown. This is the time allocated for all pods (critical and non-critical) to terminate. The value must be between 10 and 10000. This field can only be configured if the node pool uses Spot VMs or Preemptible VMs.
+
+* `shutdown_grace_period_critical_pods_seconds` - (Optional) The grace period (in seconds) to use during a graceful node shutdown for critical pods. This value must be less than or equal to `shutdown_grace_period_seconds`. This field can only be configured if the node pool uses Spot VMs or Preemptible VMs.
 
 ## Import
 

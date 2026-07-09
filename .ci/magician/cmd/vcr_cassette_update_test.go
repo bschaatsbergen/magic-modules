@@ -23,7 +23,7 @@ func TestFormatVCRCassettesUpdateReplaying(t *testing.T) {
 			name: "replay error",
 			data: vcrCassetteUpdateReplayingResult{
 				ReplayingErr: fmt.Errorf("some error"),
-				ReplayingResult: &vcr.Result{
+				ReplayingResult: vcr.Result{
 					PassedTests:  []string{"a", "b"},
 					FailedTests:  []string{"c", "d"},
 					SkippedTests: []string{"e"},
@@ -34,6 +34,8 @@ func TestFormatVCRCassettesUpdateReplaying(t *testing.T) {
 				[]string{
 					"#################################",
 					"Tests Analytics",
+					"#################################",
+					"",
 					"Total tests: 5",
 					"Passed tests: 2",
 					"Skipped tests: 1",
@@ -47,7 +49,8 @@ func TestFormatVCRCassettesUpdateReplaying(t *testing.T) {
 					"#################################",
 					"",
 					"#################################",
-					"Errors occurred during REPLAYING mode.", "#################################",
+					"Errors occurred during REPLAYING mode.",
+					"#################################",
 				},
 				"\n",
 			),
@@ -55,7 +58,7 @@ func TestFormatVCRCassettesUpdateReplaying(t *testing.T) {
 		{
 			name: "replay success",
 			data: vcrCassetteUpdateReplayingResult{
-				ReplayingResult: &vcr.Result{
+				ReplayingResult: vcr.Result{
 					PassedTests:  []string{"a", "b"},
 					SkippedTests: []string{"e"},
 				},
@@ -65,6 +68,8 @@ func TestFormatVCRCassettesUpdateReplaying(t *testing.T) {
 				[]string{
 					"#################################",
 					"Tests Analytics",
+					"#################################",
+					"",
 					"Total tests: 3",
 					"Passed tests: 2",
 					"Skipped tests: 1",
@@ -74,7 +79,8 @@ func TestFormatVCRCassettesUpdateReplaying(t *testing.T) {
 					"",
 					"",
 					"#################################",
-					"All tests passed in REPLAYING mode.", "#################################",
+					"All tests passed in REPLAYING mode.",
+					"#################################",
 				},
 				"\n",
 			),
@@ -82,7 +88,7 @@ func TestFormatVCRCassettesUpdateReplaying(t *testing.T) {
 		{
 			name: "replay failure without error",
 			data: vcrCassetteUpdateReplayingResult{
-				ReplayingResult: &vcr.Result{
+				ReplayingResult: vcr.Result{
 					PassedTests:  []string{"a", "b"},
 					FailedTests:  []string{"c", "d"},
 					SkippedTests: []string{"e"},
@@ -93,6 +99,8 @@ func TestFormatVCRCassettesUpdateReplaying(t *testing.T) {
 				[]string{
 					"#################################",
 					"Tests Analytics",
+					"#################################",
+					"",
 					"Total tests: 5",
 					"Passed tests: 2",
 					"Skipped tests: 1",
@@ -111,7 +119,7 @@ func TestFormatVCRCassettesUpdateReplaying(t *testing.T) {
 		{
 			name: "replay panic",
 			data: vcrCassetteUpdateReplayingResult{
-				ReplayingResult: &vcr.Result{
+				ReplayingResult: vcr.Result{
 					PassedTests:  []string{"a", "b"},
 					FailedTests:  []string{"c", "d"},
 					SkippedTests: []string{"e"},
@@ -150,7 +158,7 @@ func TestFormatVCRCassettesUpdateRecording(t *testing.T) {
 			name: "record error",
 			data: vcrCassetteUpdateRecordingResult{
 				RecordingErr: fmt.Errorf("some error"),
-				RecordingResult: &vcr.Result{
+				RecordingResult: vcr.Result{
 					PassedTests: []string{"a", "b"},
 					FailedTests: []string{"c", "d"},
 				},
@@ -160,6 +168,7 @@ func TestFormatVCRCassettesUpdateRecording(t *testing.T) {
 				[]string{
 					"#################################",
 					"RECORDING Tests Report",
+					"#################################",
 					"",
 					"",
 					"Tests passed during RECORDING mode:",
@@ -173,7 +182,7 @@ func TestFormatVCRCassettesUpdateRecording(t *testing.T) {
 					"",
 					"",
 					"",
-					"Errors occurred during RECORDING mode.",
+					"Errors occurred during RECORDING mode: some error.",
 				},
 				"\n",
 			),
@@ -181,7 +190,7 @@ func TestFormatVCRCassettesUpdateRecording(t *testing.T) {
 		{
 			name: "record success",
 			data: vcrCassetteUpdateRecordingResult{
-				RecordingResult: &vcr.Result{
+				RecordingResult: vcr.Result{
 					PassedTests: []string{"a", "b"},
 				},
 				AllRecordingPassed: true,
@@ -190,6 +199,7 @@ func TestFormatVCRCassettesUpdateRecording(t *testing.T) {
 				[]string{
 					"#################################",
 					"RECORDING Tests Report",
+					"#################################",
 					"",
 					"",
 					"Tests passed during RECORDING mode:",
@@ -209,7 +219,7 @@ func TestFormatVCRCassettesUpdateRecording(t *testing.T) {
 		{
 			name: "record failed without error",
 			data: vcrCassetteUpdateRecordingResult{
-				RecordingResult: &vcr.Result{
+				RecordingResult: vcr.Result{
 					PassedTests: []string{"a", "b"},
 					FailedTests: []string{"c", "d"},
 				},
@@ -219,6 +229,7 @@ func TestFormatVCRCassettesUpdateRecording(t *testing.T) {
 				[]string{
 					"#################################",
 					"RECORDING Tests Report",
+					"#################################",
 					"",
 					"",
 					"Tests passed during RECORDING mode:",
@@ -235,7 +246,7 @@ func TestFormatVCRCassettesUpdateRecording(t *testing.T) {
 		{
 			name: "record panic",
 			data: vcrCassetteUpdateRecordingResult{
-				RecordingResult: &vcr.Result{
+				RecordingResult: vcr.Result{
 					PassedTests: []string{"a", "b"},
 					FailedTests: []string{"c", "d"},
 					Panics:      []string{"e"},
@@ -254,7 +265,7 @@ func TestFormatVCRCassettesUpdateRecording(t *testing.T) {
 		{
 			name: "has terminated test",
 			data: vcrCassetteUpdateRecordingResult{
-				RecordingResult: &vcr.Result{
+				RecordingResult: vcr.Result{
 					PassedTests: []string{"a", "b"},
 				},
 				HasTerminatedTests: true,
@@ -264,6 +275,7 @@ func TestFormatVCRCassettesUpdateRecording(t *testing.T) {
 				[]string{
 					"#################################",
 					"RECORDING Tests Report",
+					"#################################",
 					"",
 					"",
 					"Tests passed during RECORDING mode:",
@@ -301,77 +313,83 @@ func TestExecVCRCassetteUpdate(t *testing.T) {
 			cmdResults: make(map[string]string),
 			expectedCalls: map[string][]ParameterList{
 				"Run": {
-					{"/mock/dir/magic-modules/.ci/magician", "gsutil", []string{"-m", "-q", "cp", "gs://ci-vcr-cassettes/beta/fixtures/*", "/mock/dir/magic-modules/.ci/magician/cassettes/beta"}, map[string]string(nil)},
-					{"/mock/dir/magic-modules/.ci/magician", "gsutil", []string{"-m", "-q", "cp", "/mock/dir/magic-modules/.ci/magician/cassettes/beta/*", "gs://vcr-nightly/beta/2024-07-08/buildID/main_cassettes_backup/fixtures/"}, map[string]string(nil)},
+					{"/mock/dir/magic-modules/.ci/magician", "gcloud", []string{"storage", "cp", "gs://ci-vcr-cassettes/beta/fixtures/*", "/mock/dir/magic-modules/.ci/magician/cassettes/beta"}, map[string]string(nil)},
+					{"/mock/dir/magic-modules/.ci/magician", "gcloud", []string{"storage", "cp", "/mock/dir/magic-modules/.ci/magician/cassettes/beta/*", "gs://vcr-nightly/beta/2024-07-08/buildID/main_cassettes_backup/fixtures/"}, map[string]string(nil)},
 					{"/mock/dir/magic-modules/.ci/magician", "git", []string{"clone", "https://hashicorp:token@github.com/hashicorp/terraform-provider-google-beta", "gopath/src/github.com/hashicorp/terraform-provider-google-beta"}, map[string]string(nil)},
 					{"gopath/src/github.com/hashicorp/terraform-provider-google-beta", "go", []string{"list", "./..."}, map[string]string(nil)},
-					{"gopath/src/github.com/hashicorp/terraform-provider-google-beta", "go", []string{"test", "", "-parallel", "32", "-v", "-run=TestAcc", "-timeout", "240m", "-ldflags=-X=github.com/hashicorp/terraform-provider-google-beta/version.ProviderVersion=acc", "-vet=off"}, map[string]string{
+					{"gopath/src/github.com/hashicorp/terraform-provider-google-beta", "go", []string{"test", "", "-p", "16", "-parallel", "32", "-v", "-run=TestAcc", "-timeout", "360m", "-ldflags=-X=github.com/hashicorp/terraform-provider-google-beta/version.ProviderVersion=acc", "-vet=off"}, map[string]string{
 						"ACCTEST_PARALLELISM":            "32",
 						"GOOGLE_APPLICATION_CREDENTIALS": "/mock/dir/magic-modules/.ci/magician/sa_key.json",
 						"GOOGLE_CREDENTIALS":             "sa_key",
 						"GOOGLE_TEST_DIRECTORY":          "",
 						"SA_KEY":                         "sa_key",
 						"TF_ACC":                         "1",
+						"TF_ACC_REFRESH_AFTER_APPLY":     "1",
 						"TF_LOG":                         "DEBUG",
+						"TF_LOG_CORE":                    "WARN",
 						"TF_LOG_PATH_MASK":               "/mock/dir/magic-modules/.ci/magician/testlogs/replaying/beta/%s.log",
 						"TF_LOG_SDK_FRAMEWORK":           "INFO",
 						"TF_SCHEMA_PANIC_ON_ERROR":       "1",
 						"VCR_MODE":                       "REPLAYING",
 						"VCR_PATH":                       "/mock/dir/magic-modules/.ci/magician/cassettes/beta",
 					}},
-					{"/mock/dir/magic-modules/.ci/magician", "gsutil", []string{"-h", "Content-Type:text/plain", "-q", "cp", "-r", "/mock/dir/magic-modules/.ci/magician/testlogs/replaying_test.log", "gs://vcr-nightly/beta/2024-07-08/buildID/logs/replaying/"}, map[string]string(nil)},
-					{"/mock/dir/magic-modules/.ci/magician", "gsutil", []string{"-h", "Content-Type:text/plain", "-q", "cp", "-r", "/mock/dir/magic-modules/.ci/magician/testlogs/replaying/beta/*", "gs://vcr-nightly/beta/2024-07-08/buildID/logs/build-log/"}, map[string]string(nil)},
+					{"/mock/dir/magic-modules/.ci/magician", "gcloud", []string{"storage", "cp", "--recursive", "--content-type=text/plain", "/mock/dir/magic-modules/.ci/magician/testlogs/replaying_test.log", "gs://vcr-nightly/beta/2024-07-08/buildID/logs/replaying/"}, map[string]string(nil)},
+					{"/mock/dir/magic-modules/.ci/magician", "gcloud", []string{"storage", "cp", "--recursive", "--content-type=text/plain", "/mock/dir/magic-modules/.ci/magician/testlogs/replaying/beta/*", "gs://vcr-nightly/beta/2024-07-08/buildID/logs/build-log/"}, map[string]string(nil)},
 				},
 			},
 		},
 		{
 			name: "replay failed then record",
 			cmdResults: map[string]string{
-				"gopath/src/github.com/hashicorp/terraform-provider-google-beta go [test  -parallel 32 -v -run=TestAcc -timeout 240m -ldflags=-X=github.com/hashicorp/terraform-provider-google-beta/version.ProviderVersion=acc -vet=off] map[ACCTEST_PARALLELISM:32 GOOGLE_APPLICATION_CREDENTIALS:/mock/dir/magic-modules/.ci/magician/sa_key.json GOOGLE_CREDENTIALS:sa_key GOOGLE_TEST_DIRECTORY: SA_KEY:sa_key TF_ACC:1 TF_LOG:DEBUG TF_LOG_PATH_MASK:/mock/dir/magic-modules/.ci/magician/testlogs/replaying/beta/%s.log TF_LOG_SDK_FRAMEWORK:INFO TF_SCHEMA_PANIC_ON_ERROR:1 VCR_MODE:REPLAYING VCR_PATH:/mock/dir/magic-modules/.ci/magician/cassettes/beta]":                                           "--- FAIL: TestAccContainerNodePool_defaultDriverInstallation (590.29s)",
-				"gopath/src/github.com/hashicorp/terraform-provider-google-beta go [test  -parallel 1 -v -run=TestAccContainerNodePool_defaultDriverInstallation$ -timeout 240m -ldflags=-X=github.com/hashicorp/terraform-provider-google-beta/version.ProviderVersion=acc -vet=off] map[ACCTEST_PARALLELISM:1 GOOGLE_APPLICATION_CREDENTIALS:/mock/dir/magic-modules/.ci/magician/sa_key.json GOOGLE_CREDENTIALS:sa_key GOOGLE_TEST_DIRECTORY: SA_KEY:sa_key TF_ACC:1 TF_LOG:DEBUG TF_LOG_PATH_MASK:/mock/dir/magic-modules/.ci/magician/testlogs/recording/beta/%s.log TF_LOG_SDK_FRAMEWORK:INFO TF_SCHEMA_PANIC_ON_ERROR:1 VCR_MODE:RECORDING VCR_PATH:/mock/dir/magic-modules/.ci/magician/cassettes/beta]": "--- PASS: TestAccContainerNodePool_defaultDriverInstallation (590.29s)",
+				"gopath/src/github.com/hashicorp/terraform-provider-google-beta go [test  -p 16 -parallel 32 -v -run=TestAcc -timeout 360m -ldflags=-X=github.com/hashicorp/terraform-provider-google-beta/version.ProviderVersion=acc -vet=off] map[ACCTEST_PARALLELISM:32 GOOGLE_APPLICATION_CREDENTIALS:/mock/dir/magic-modules/.ci/magician/sa_key.json GOOGLE_CREDENTIALS:sa_key GOOGLE_TEST_DIRECTORY: SA_KEY:sa_key TF_ACC:1 TF_ACC_REFRESH_AFTER_APPLY:1 TF_LOG:DEBUG TF_LOG_CORE:WARN TF_LOG_PATH_MASK:/mock/dir/magic-modules/.ci/magician/testlogs/replaying/beta/%s.log TF_LOG_SDK_FRAMEWORK:INFO TF_SCHEMA_PANIC_ON_ERROR:1 VCR_MODE:REPLAYING VCR_PATH:/mock/dir/magic-modules/.ci/magician/cassettes/beta]":                                     "--- FAIL: TestAccContainerNodePool_defaultDriverInstallation (590.29s)",
+				"gopath/src/github.com/hashicorp/terraform-provider-google-beta go [test  -parallel 1 -v -run=TestAccContainerNodePool_defaultDriverInstallation$ -timeout 360m -ldflags=-X=github.com/hashicorp/terraform-provider-google-beta/version.ProviderVersion=acc -vet=off] map[ACCTEST_PARALLELISM:1 GOOGLE_APPLICATION_CREDENTIALS:/mock/dir/magic-modules/.ci/magician/sa_key.json GOOGLE_CREDENTIALS:sa_key GOOGLE_TEST_DIRECTORY: SA_KEY:sa_key TF_ACC:1 TF_ACC_REFRESH_AFTER_APPLY:1 TF_LOG:DEBUG TF_LOG_CORE:WARN TF_LOG_PATH_MASK:/mock/dir/magic-modules/.ci/magician/testlogs/recording/beta/%s.log TF_LOG_SDK_FRAMEWORK:INFO TF_SCHEMA_PANIC_ON_ERROR:1 VCR_MODE:RECORDING VCR_PATH:/mock/dir/magic-modules/.ci/magician/cassettes/beta]": "--- PASS: TestAccContainerNodePool_defaultDriverInstallation (590.29s)",
 			},
 			expectedCalls: map[string][]ParameterList{
 				"Run": {
 					// replay
-					{"/mock/dir/magic-modules/.ci/magician", "gsutil", []string{"-m", "-q", "cp", "gs://ci-vcr-cassettes/beta/fixtures/*", "/mock/dir/magic-modules/.ci/magician/cassettes/beta"}, map[string]string(nil)},
-					{"/mock/dir/magic-modules/.ci/magician", "gsutil", []string{"-m", "-q", "cp", "/mock/dir/magic-modules/.ci/magician/cassettes/beta/*", "gs://vcr-nightly/beta/2024-07-08/buildID/main_cassettes_backup/fixtures/"}, map[string]string(nil)},
+					{"/mock/dir/magic-modules/.ci/magician", "gcloud", []string{"storage", "cp", "gs://ci-vcr-cassettes/beta/fixtures/*", "/mock/dir/magic-modules/.ci/magician/cassettes/beta"}, map[string]string(nil)},
+					{"/mock/dir/magic-modules/.ci/magician", "gcloud", []string{"storage", "cp", "/mock/dir/magic-modules/.ci/magician/cassettes/beta/*", "gs://vcr-nightly/beta/2024-07-08/buildID/main_cassettes_backup/fixtures/"}, map[string]string(nil)},
 					{"/mock/dir/magic-modules/.ci/magician", "git", []string{"clone", "https://hashicorp:token@github.com/hashicorp/terraform-provider-google-beta", "gopath/src/github.com/hashicorp/terraform-provider-google-beta"}, map[string]string(nil)},
 					{"gopath/src/github.com/hashicorp/terraform-provider-google-beta", "go", []string{"list", "./..."}, map[string]string(nil)},
-					{"gopath/src/github.com/hashicorp/terraform-provider-google-beta", "go", []string{"test", "", "-parallel", "32", "-v", "-run=TestAcc", "-timeout", "240m", "-ldflags=-X=github.com/hashicorp/terraform-provider-google-beta/version.ProviderVersion=acc", "-vet=off"}, map[string]string{
+					{"gopath/src/github.com/hashicorp/terraform-provider-google-beta", "go", []string{"test", "", "-p", "16", "-parallel", "32", "-v", "-run=TestAcc", "-timeout", "360m", "-ldflags=-X=github.com/hashicorp/terraform-provider-google-beta/version.ProviderVersion=acc", "-vet=off"}, map[string]string{
 						"ACCTEST_PARALLELISM":            "32",
 						"GOOGLE_APPLICATION_CREDENTIALS": "/mock/dir/magic-modules/.ci/magician/sa_key.json",
 						"GOOGLE_CREDENTIALS":             "sa_key",
 						"GOOGLE_TEST_DIRECTORY":          "",
 						"SA_KEY":                         "sa_key",
 						"TF_ACC":                         "1",
+						"TF_ACC_REFRESH_AFTER_APPLY":     "1",
 						"TF_LOG":                         "DEBUG",
+						"TF_LOG_CORE":                    "WARN",
 						"TF_LOG_PATH_MASK":               "/mock/dir/magic-modules/.ci/magician/testlogs/replaying/beta/%s.log",
 						"TF_LOG_SDK_FRAMEWORK":           "INFO",
 						"TF_SCHEMA_PANIC_ON_ERROR":       "1",
 						"VCR_MODE":                       "REPLAYING",
 						"VCR_PATH":                       "/mock/dir/magic-modules/.ci/magician/cassettes/beta",
 					}},
-					{"/mock/dir/magic-modules/.ci/magician", "gsutil", []string{"-h", "Content-Type:text/plain", "-q", "cp", "-r", "/mock/dir/magic-modules/.ci/magician/testlogs/replaying_test.log", "gs://vcr-nightly/beta/2024-07-08/buildID/logs/replaying/"}, map[string]string(nil)},
-					{"/mock/dir/magic-modules/.ci/magician", "gsutil", []string{"-h", "Content-Type:text/plain", "-q", "cp", "-r", "/mock/dir/magic-modules/.ci/magician/testlogs/replaying/beta/*", "gs://vcr-nightly/beta/2024-07-08/buildID/logs/build-log/"}, map[string]string(nil)},
+					{"/mock/dir/magic-modules/.ci/magician", "gcloud", []string{"storage", "cp", "--recursive", "--content-type=text/plain", "/mock/dir/magic-modules/.ci/magician/testlogs/replaying_test.log", "gs://vcr-nightly/beta/2024-07-08/buildID/logs/replaying/"}, map[string]string(nil)},
+					{"/mock/dir/magic-modules/.ci/magician", "gcloud", []string{"storage", "cp", "--recursive", "--content-type=text/plain", "/mock/dir/magic-modules/.ci/magician/testlogs/replaying/beta/*", "gs://vcr-nightly/beta/2024-07-08/buildID/logs/build-log/"}, map[string]string(nil)},
 					// record
 					{"gopath/src/github.com/hashicorp/terraform-provider-google-beta", "go", []string{"list", "./..."}, map[string]string(nil)},
-					{"gopath/src/github.com/hashicorp/terraform-provider-google-beta", "go", []string{"test", "", "-parallel", "1", "-v", "-run=TestAccContainerNodePool_defaultDriverInstallation$", "-timeout", "240m", "-ldflags=-X=github.com/hashicorp/terraform-provider-google-beta/version.ProviderVersion=acc", "-vet=off"}, map[string]string{
+					{"gopath/src/github.com/hashicorp/terraform-provider-google-beta", "go", []string{"test", "", "-parallel", "1", "-v", "-run=TestAccContainerNodePool_defaultDriverInstallation$", "-timeout", "360m", "-ldflags=-X=github.com/hashicorp/terraform-provider-google-beta/version.ProviderVersion=acc", "-vet=off"}, map[string]string{
 						"ACCTEST_PARALLELISM":            "1",
 						"GOOGLE_APPLICATION_CREDENTIALS": "/mock/dir/magic-modules/.ci/magician/sa_key.json",
 						"GOOGLE_CREDENTIALS":             "sa_key",
 						"GOOGLE_TEST_DIRECTORY":          "",
 						"SA_KEY":                         "sa_key",
 						"TF_ACC":                         "1",
+						"TF_ACC_REFRESH_AFTER_APPLY":     "1",
 						"TF_LOG":                         "DEBUG",
+						"TF_LOG_CORE":                    "WARN",
 						"TF_LOG_PATH_MASK":               "/mock/dir/magic-modules/.ci/magician/testlogs/recording/beta/%s.log",
 						"TF_LOG_SDK_FRAMEWORK":           "INFO",
 						"TF_SCHEMA_PANIC_ON_ERROR":       "1",
 						"VCR_MODE":                       "RECORDING",
 						"VCR_PATH":                       "/mock/dir/magic-modules/.ci/magician/cassettes/beta",
 					}},
-					{"/mock/dir/magic-modules/.ci/magician", "gsutil", []string{"-h", "Content-Type:text/plain", "-q", "cp", "-r", "/mock/dir/magic-modules/.ci/magician/testlogs/recording_test.log", "gs://vcr-nightly/beta/2024-07-08/buildID/logs/recording/"}, map[string]string(nil)},
-					{"/mock/dir/magic-modules/.ci/magician", "gsutil", []string{"-h", "Content-Type:text/plain", "-q", "cp", "-r", "/mock/dir/magic-modules/.ci/magician/testlogs/recording/beta/*", "gs://vcr-nightly/beta/2024-07-08/buildID/logs/build-log/"}, map[string]string(nil)},
-					{"/mock/dir/magic-modules/.ci/magician", "gsutil", []string{"-m", "-q", "cp", "/mock/dir/magic-modules/.ci/magician/cassettes/beta", "gs://ci-vcr-cassettes/beta/fixtures/"}, map[string]string(nil)},
+					{"/mock/dir/magic-modules/.ci/magician", "gcloud", []string{"storage", "cp", "--recursive", "--content-type=text/plain", "/mock/dir/magic-modules/.ci/magician/testlogs/recording_test.log", "gs://vcr-nightly/beta/2024-07-08/buildID/logs/recording/"}, map[string]string(nil)},
+					{"/mock/dir/magic-modules/.ci/magician", "gcloud", []string{"storage", "cp", "--recursive", "--content-type=text/plain", "/mock/dir/magic-modules/.ci/magician/testlogs/recording/beta/*", "gs://vcr-nightly/beta/2024-07-08/buildID/logs/build-log/"}, map[string]string(nil)},
+					{"/mock/dir/magic-modules/.ci/magician", "gcloud", []string{"storage", "cp", "/mock/dir/magic-modules/.ci/magician/cassettes/beta/*", "gs://ci-vcr-cassettes/beta/fixtures/"}, map[string]string(nil)},
 				},
 			},
 		},
@@ -389,7 +407,7 @@ func TestExecVCRCassetteUpdate(t *testing.T) {
 			ctlr := source.NewController("gopath", "hashicorp", "token", rnr)
 			vt, err := vcr.NewTester(map[string]string{
 				"SA_KEY": "sa_key",
-			}, rnr)
+			}, "ci-vcr-cassettes", "", rnr, false)
 			if err != nil {
 				t.Fatalf("Failed to create new tester: %v", err)
 			}
@@ -413,5 +431,33 @@ func TestExecVCRCassetteUpdate(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestExecVCRCassetteUpdate_BuildFailure(t *testing.T) {
+	rnr := &mockRunner{
+		calledMethods: make(map[string][]ParameterList),
+		cwd:           "/mock/dir/magic-modules/.ci/magician",
+		dirStack:      list.New(),
+		cmdResults: map[string]string{
+			"gopath/src/github.com/hashicorp/terraform-provider-google-beta go [test  -p 16 -parallel 32 -v -run=TestAcc -timeout 360m -ldflags=-X=github.com/hashicorp/terraform-provider-google-beta/version.ProviderVersion=acc -vet=off] map[ACCTEST_PARALLELISM:32 GOOGLE_APPLICATION_CREDENTIALS:/mock/dir/magic-modules/.ci/magician/sa_key.json GOOGLE_CREDENTIALS:sa_key GOOGLE_TEST_DIRECTORY: SA_KEY:sa_key TF_ACC:1 TF_ACC_REFRESH_AFTER_APPLY:1 TF_LOG:DEBUG TF_LOG_CORE:WARN TF_LOG_PATH_MASK:/mock/dir/magic-modules/.ci/magician/testlogs/replaying/beta/%s.log TF_LOG_SDK_FRAMEWORK:INFO TF_SCHEMA_PANIC_ON_ERROR:1 VCR_MODE:REPLAYING VCR_PATH:/mock/dir/magic-modules/.ci/magician/cassettes/beta]": "FAIL\tgithub.com/hashicorp/terraform-provider-google-beta/google-beta/services/corebilling [build failed]",
+		},
+	}
+
+	ctlr := source.NewController("gopath", "hashicorp", "token", rnr)
+	vt, err := vcr.NewTester(map[string]string{
+		"SA_KEY": "sa_key",
+	}, "ci-vcr-cassettes", "", rnr, false)
+	if err != nil {
+		t.Fatalf("Failed to create new tester: %v", err)
+	}
+
+	err = execVCRCassetteUpdate("buildID", "2024-07-08", rnr, ctlr, vt)
+	if err == nil {
+		t.Fatalf("execVCRCassetteUpdate expected to return error on build failure, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "provider failed to build during VCR tests in REPLAYING mode") {
+		t.Errorf("Unexpected error message: %v", err)
 	}
 }

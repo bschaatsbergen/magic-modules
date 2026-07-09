@@ -8,6 +8,7 @@ import (
 
 	"github.com/hashicorp/terraform-provider-google/google/acctest"
 	"github.com/hashicorp/terraform-provider-google/google/envvar"
+	_ "github.com/hashicorp/terraform-provider-google/google/services/pubsub"
 	tpgstorage "github.com/hashicorp/terraform-provider-google/google/services/storage"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -27,7 +28,7 @@ func TestAccStorageNotification_basic(t *testing.T) {
 	var notification storage.Notification
 	bucketName := acctest.TestBucketName(t)
 	topicName := fmt.Sprintf("tf-pstopic-test-%d", acctest.RandInt(t))
-	topic := fmt.Sprintf("//pubsub.googleapis.com/projects/%s/topics/%s", os.Getenv("GOOGLE_PROJECT"), topicName)
+	topic := fmt.Sprintf("projects/%s/topics/%s", os.Getenv("GOOGLE_PROJECT"), topicName)
 
 	acctest.VcrTest(t, resource.TestCase{
 		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
@@ -71,7 +72,7 @@ func TestAccStorageNotification_withEventsAndAttributes(t *testing.T) {
 	var notification storage.Notification
 	bucketName := acctest.TestBucketName(t)
 	topicName := fmt.Sprintf("tf-pstopic-test-%d", acctest.RandInt(t))
-	topic := fmt.Sprintf("//pubsub.googleapis.com/projects/%s/topics/%s", os.Getenv("GOOGLE_PROJECT"), topicName)
+	topic := fmt.Sprintf("projects/%s/topics/%s", os.Getenv("GOOGLE_PROJECT"), topicName)
 	eventType1 := "OBJECT_FINALIZE"
 	eventType2 := "OBJECT_ARCHIVE"
 
@@ -115,9 +116,12 @@ func testAccStorageNotificationDestroyProducer(t *testing.T) func(s *terraform.S
 				continue
 			}
 
-			bucket, notificationID := tpgstorage.ResourceStorageNotificationParseID(rs.Primary.ID)
+			bucket, notificationID, err := tpgstorage.ParseStorageNotificationID(rs.Primary.ID)
+			if err != nil {
+				return err
+			}
 
-			_, err := config.NewStorageClient(config.UserAgent).Notifications.Get(bucket, notificationID).Do()
+			_, err = tpgstorage.NewClient(config, config.UserAgent).Notifications.Get(bucket, notificationID).Do()
 			if err == nil {
 				return fmt.Errorf("Notification configuration still exists")
 			}
@@ -140,9 +144,12 @@ func testAccCheckStorageNotificationExists(t *testing.T, resource string, notifi
 
 		config := acctest.GoogleProviderConfig(t)
 
-		bucket, notificationID := tpgstorage.ResourceStorageNotificationParseID(rs.Primary.ID)
+		bucket, notificationID, err := tpgstorage.ParseStorageNotificationID(rs.Primary.ID)
+		if err != nil {
+			return err
+		}
 
-		found, err := config.NewStorageClient(config.UserAgent).Notifications.Get(bucket, notificationID).Do()
+		found, err := tpgstorage.NewClient(config, config.UserAgent).Notifications.Get(bucket, notificationID).Do()
 		if err != nil {
 			return err
 		}
@@ -205,10 +212,11 @@ resource "google_pubsub_topic_iam_binding" "binding" {
 }
 
 resource "google_storage_notification" "notification" {
-  bucket         = google_storage_bucket.bucket.name
-  payload_format = "JSON_API_V1"
-  topic          = google_pubsub_topic.topic.id
-  depends_on     = [google_pubsub_topic_iam_binding.binding]
+  bucket            = google_storage_bucket.bucket.name
+  payload_format    = "JSON_API_V1"
+  topic             = google_pubsub_topic.topic.id
+  depends_on        = [google_pubsub_topic_iam_binding.binding]
+  custom_attributes = {}
 }
 
 resource "google_storage_notification" "notification_with_prefix" {
@@ -216,7 +224,10 @@ resource "google_storage_notification" "notification_with_prefix" {
   payload_format     = "JSON_API_V1"
   topic              = google_pubsub_topic.topic.id
   object_name_prefix = "foobar"
-  depends_on         = [google_pubsub_topic_iam_binding.binding]
+  depends_on         = [
+    google_pubsub_topic_iam_binding.binding,
+    google_storage_notification.notification
+  ]
 }
 `, bucketName, topicName)
 }

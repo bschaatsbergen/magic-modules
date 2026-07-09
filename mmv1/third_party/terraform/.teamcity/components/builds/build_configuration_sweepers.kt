@@ -1,5 +1,5 @@
 /*
- * Copyright (c) HashiCorp, Inc.
+ * Copyright IBM Corp. 2014, 2026
  * SPDX-License-Identifier: MPL-2.0
  */
 
@@ -7,9 +7,13 @@
 
 package builds
 
+import ArtifactRules
 import DefaultBuildTimeoutDuration
 import DefaultParallelism
+import jetbrains.buildServer.configs.kotlin.buildFeatures.GolangFeature
 import jetbrains.buildServer.configs.kotlin.BuildType
+import jetbrains.buildServer.configs.kotlin.failureConditions.BuildFailureOnText
+import jetbrains.buildServer.configs.kotlin.failureConditions.failOnText
 import jetbrains.buildServer.configs.kotlin.sharedResources
 import jetbrains.buildServer.configs.kotlin.vcs.GitVcsRoot
 import replaceCharsId
@@ -29,11 +33,10 @@ fun BuildConfigurationForServiceSweeper(providerName: String, sweeperName: Strin
     return bc
 }
 
-fun BuildConfigurationForProjectSweeper(providerName: String, sweeperName: String, packages: Map<String, Map<String, String>>, parentProjectName: String, vcsRoot: GitVcsRoot, sharedResources: List<String>, environmentVariables: AccTestConfiguration): BuildType {
+fun BuildConfigurationForGlobalSweeper(providerName: String, sweeperName: String, sweeperRun: String, packages: Map<String, Map<String, String>>, parentProjectName: String, vcsRoot: GitVcsRoot, sharedResources: List<String>, environmentVariables: AccTestConfiguration): BuildType {
     val sweeperPackage: Map<String, String> = packages.getValue("sweeper")
     val sweeperPath: String = sweeperPackage.getValue("path").toString()
 
-    val sweeperRun = "GoogleProject" // Name from .google/services/resourcemanager/resource_google_project_sweeper.go
     val sweeperRegions = "us-central1" // A value needs to be present, despite projects not being regional resources
 
     val s = SweeperDetails(sweeperName, parentProjectName, providerName, sweeperRun, sweeperRegions)
@@ -57,6 +60,7 @@ class SweeperDetails(private val sweeperName: String, private val parentProjectN
         // These hardcoded values affect the sweeper CLI command's behaviour
         val testPrefix = "TestAcc"
         val testTimeout = "12"
+        val releaseDiffTest = false
 
         return BuildType {
 
@@ -78,7 +82,9 @@ class SweeperDetails(private val sweeperName: String, private val parentProjectN
             }
 
             features {
-                golang()
+                feature(GolangFeature {
+                    testFormat = "json"
+                })
                 if (sharedResources.isNotEmpty()) {
                     sharedResources {
                         // When the build runs, it locks the value(s) below
@@ -91,7 +97,7 @@ class SweeperDetails(private val sweeperName: String, private val parentProjectN
 
             params {
                 configureGoogleSpecificTestParameters(environmentVariables)
-                acceptanceTestBuildParams(parallelism, testPrefix, testTimeout)
+                acceptanceTestBuildParams(parallelism, testPrefix, testTimeout, releaseDiffTest)
                 sweeperParameters(sweeperRegions, sweeperRun)
                 terraformLoggingParameters(environmentVariables, providerName)
                 terraformCoreBinaryTesting()
@@ -100,11 +106,20 @@ class SweeperDetails(private val sweeperName: String, private val parentProjectN
                 workingDirectory(path)
             }
 
-            artifactRules = "%teamcity.build.checkoutDir%/debug*.txt"
+            artifactRules = ArtifactRules
 
             failureConditions {
                 errorMessage = true
                 executionTimeoutMin = buildTimeout
+
+                // Stop builds if the branch does not exist
+                failOnText {
+                  conditionType = BuildFailureOnText.ConditionType.CONTAINS
+                  pattern = "which does not correspond to any branch monitored by the build VCS roots"
+                  failureMessage = "Error: The branch %teamcity.build.branch% does not exist"
+                  reverse = false
+                  stopBuildOnFailure = true
+                }
             }
 
         }

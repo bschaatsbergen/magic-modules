@@ -9,6 +9,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 
 	"github.com/hashicorp/terraform-provider-google/google/acctest"
+	"github.com/hashicorp/terraform-provider-google/google/services/integrationconnectors"
+	_ "github.com/hashicorp/terraform-provider-google/google/services/resourcemanager"
+	_ "github.com/hashicorp/terraform-provider-google/google/services/secretmanager"
 	"github.com/hashicorp/terraform-provider-google/google/tpgresource"
 	transport_tpg "github.com/hashicorp/terraform-provider-google/google/transport"
 )
@@ -219,6 +222,7 @@ resource "google_integration_connectors_connection" "zendeskconnection" {
   }
   log_config {
     enabled = true
+    level   = "DEBUG"
   }
   node_config {
     min_node_count = 2
@@ -1443,7 +1447,7 @@ func testAccCheckIntegrationConnectorsConnectionDestroyProducer(t *testing.T) fu
 
 			config := acctest.GoogleProviderConfig(t)
 
-			url, err := tpgresource.ReplaceVarsForTest(config, rs, "{{IntegrationConnectorsBasePath}}projects/{{project}}/locations/{{location}}/connections/{{name}}")
+			url, err := tpgresource.ReplaceVarsForTest(config, rs, transport_tpg.BaseUrl(integrationconnectors.Product, config)+"projects/{{project}}/locations/{{location}}/connections/{{name}}")
 			if err != nil {
 				return err
 			}

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) HashiCorp, Inc.
+ * Copyright IBM Corp. 2014, 2026
  * SPDX-License-Identifier: MPL-2.0
  */
 
@@ -7,7 +7,6 @@
 
 package builds
 
-import DefaultTerraformCoreVersion
 import jetbrains.buildServer.configs.kotlin.BuildSteps
 import jetbrains.buildServer.configs.kotlin.buildSteps.ScriptBuildStep
 
@@ -80,7 +79,7 @@ fun BuildSteps.downloadTerraformBinary() {
 fun BuildSteps.runSweepers(sweeperStepName: String) {
     step(ScriptBuildStep{
         name = sweeperStepName
-        scriptContent = "go test -v \"%PACKAGE_PATH%\" -sweep=\"%SWEEPER_REGIONS%\" -sweep-allow-failures -sweep-run=\"%SWEEP_RUN%\" -timeout 30m"
+        scriptContent = "go test -v \"%PACKAGE_PATH%\" -run=\"%TEST_PREFIX%\" -sweep=\"%SWEEPER_REGIONS%\" -sweep-allow-failures -sweep-run=\"%SWEEP_RUN%\" -timeout 30m -json"
     })
 }
 
@@ -138,7 +137,7 @@ fun BuildSteps.saveArtifactsToGCS() {
         name = "Tasks after running nightly tests: push artifacts(debug logs) to GCS"
         scriptContent = """
             #!/bin/bash
-            echo "Post-test step - storge artifacts(debug logs) to GCS"
+            echo "Post-test step - storage artifacts(debug logs) to GCS"
 
             # Authenticate gcloud CLI
             echo "${'$'}{GOOGLE_CREDENTIALS_GCS}" > google-account.json
@@ -160,6 +159,7 @@ fun BuildSteps.saveArtifactsToGCS() {
                 FOLDER="manual/%teamcity.project.id%/${'$'}{BRANCH_NAME}"
             fi
 
+            echo "Uploading artifacts to GCS folder: ${'$'}{FOLDER}"
             # Copy logs to GCS
             gsutil -m cp %teamcity.build.checkoutDir%/debug* gs://teamcity-logs/${'$'}{FOLDER}/%env.BUILD_NUMBER%/
 
@@ -168,10 +168,117 @@ fun BuildSteps.saveArtifactsToGCS() {
             gcloud auth application-default revoke
             gcloud auth revoke --all
 
+            BUILD_NUMBER="%system.build.number%"
+            echo "BUILD_NUMBER: ${'$'}{BUILD_NUMBER}"
+
             echo "Finished"
         """.trimIndent()
         // ${'$'} is required to allow creating a script in TeamCity that contains
         // parts like ${GIT_HASH_SHORT} without having Kotlin syntax issues. For more info see:
         // https://youtrack.jetbrains.com/issue/KT-2425/Provide-a-way-for-escaping-the-dollar-sign-symbol-in-multiline-strings-and-string-templates
     })
+}
+
+// The S3 plugin we use to upload artifacts to S3 (enabling them to be accessed via the TeamCity UI later) has a limit of
+// 1000 artifacts to be uploaded at a time. To avoid a situation where no artifacts are uploaded as a result of exceeding this
+// limit we archive all the debug logs if they equal or exceed 1000 for a given build.
+fun BuildSteps.archiveArtifactsIfOverLimit() {
+    step(ScriptBuildStep {
+        name = "Tasks after running nightly tests: archive artifacts(debug logs) if there are >=1000 before S3 upload"
+        scriptContent = """
+            #!/bin/bash
+            echo "Post-test step - archive artifacts(debug logs) if there are >=1000 before S3 upload"
+
+            # Get number of artifacts created
+            ARTIFACT_COUNT=$(ls %teamcity.build.checkoutDir%/debug* | wc -l | grep -o -E '[0-9]+')
+
+            if test ${'$'}ARTIFACT_COUNT -lt "1000"; then
+                echo "Found <1000 debug artifacts; we won't archive them before upload to S3"
+                exit 0
+            fi
+
+            echo "Found >=1000 debug artifacts; archiving before upload to S3"
+
+            # Make tarball of all debug logs
+            # Name should look similar to: debug-google-d2503f7-253644-TerraformProviders_GoogleCloud_GOOGLE_NIGHTLYTESTS_GOOGLE_PACKAGE_ACCESSAPPROVAL.tar.gz
+            cd %teamcity.build.checkoutDir%
+            ARCHIVE_NAME=debug-%PROVIDER_NAME%-%env.BUILD_NUMBER%-%system.teamcity.buildType.id%-archive.tar.gz
+            tar -cf ${'$'}ARCHIVE_NAME ./debug*
+
+            # Fail loudly if archive not made as expected
+            if [ ! -f ${'$'}ARCHIVE_NAME ]; then
+                echo "Archive file ${'$'}ARCHIVE_NAME not found!"
+
+                # Allow sanity checking
+                echo "Listing contents of %teamcity.build.checkoutDir%"
+                ls
+
+                exit 1
+            fi
+
+            # Remove all debug logs. These are all .txt files due to the effects of TF_LOG_PATH_MASK.
+            rm ./debug*.txt
+
+            # Allow sanity checking
+            echo "Listing files matching the artifact rule value %teamcity.build.checkoutDir%/debug*"
+            ls debug*
+
+            echo "Finished"
+        """.trimIndent()
+        // ${'$'} is required to allow creating a script in TeamCity that contains
+        // parts like ${GIT_HASH_SHORT} without having Kotlin syntax issues. For more info see:
+        // https://youtrack.jetbrains.com/issue/KT-2425/Provide-a-way-for-escaping-the-dollar-sign-symbol-in-multiline-strings-and-string-templates
+    })
+}
+
+fun BuildSteps.runDiffTests() {
+    if (UseTeamCityGoTest) {
+        step(ScriptBuildStep {
+            name = "Run Diff Tests"
+            scriptContent = "go test -v \"%PACKAGE_PATH%\" -timeout=\"%TIMEOUT%h\" -test.parallel=\"%PARALLELISM%\" -run=\"%TEST_PREFIX%\" -json"
+        })
+    } else {
+        step(ScriptBuildStep {
+            name = "Compile Test Binary"
+            workingDir = "%PACKAGE_PATH%"
+            scriptContent = """
+                #!/bin/bash
+                export TEST_FILE_COUNT=$(ls ./*_test.go | wc -l)
+                if test ${'$'}TEST_FILE_COUNT -gt "0"; then
+                    echo "Compiling test binary"
+                    go test -c -o test-binary
+                else
+                    echo "Skipping compilation of test binary; no Go test files found"
+                fi
+            """.trimIndent()
+        })
+
+        step(ScriptBuildStep {
+            name = "Run via scripts/teamcitytestscripts/teamcity-diff-test"
+            workingDir = "%PACKAGE_PATH%"
+            scriptContent = """
+                #!/bin/bash
+                if ! test -f "./test-binary"; then
+                    echo "Skipping test execution; file ./test-binary does not exist."
+                    exit 0
+                fi
+                
+                echo "Compiling teamcity-diff-test..."
+                pushd ../../../scripts/teamcitytestscripts > /dev/null
+                go build -o ../../teamcity-diff-test .
+                popd > /dev/null
+
+
+                export TEST_COUNT=${'$'}(./test-binary -test.list="%TEST_PREFIX%" | wc -l)
+                echo "Found ${'$'}{TEST_COUNT} tests that match the given test prefix %TEST_PREFIX%"
+                if test ${'$'}TEST_COUNT -le "0"; then
+                    echo "Skipping test execution; no tests to run"
+                    exit 0
+                fi
+                
+                echo "Starting tests"
+                ./test-binary -test.list="%TEST_PREFIX%" | ../../../teamcity-diff-test -test ./test-binary -parallelism "%PARALLELISM%" -timeout "%TIMEOUT%h"
+            """.trimIndent()
+        })
+    }
 }

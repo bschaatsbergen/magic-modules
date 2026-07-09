@@ -7,13 +7,15 @@ import (
 
 	"github.com/hashicorp/terraform-provider-google/google/acctest"
 	"github.com/hashicorp/terraform-provider-google/google/envvar"
+	_ "github.com/hashicorp/terraform-provider-google/google/services/resourcemanager"
+	_ "github.com/hashicorp/terraform-provider-google/google/services/securityposture"
 )
 
 func TestAccSecurityPosturePostureDeployment_securityposturePostureDeployment_update(t *testing.T) {
 	t.Parallel()
 
 	context := map[string]interface{}{
-		"org_id":         envvar.GetTestOrgFromEnv(t),
+		"org_id":         envvar.GetTestOrgTargetFromEnv(t),
 		"project_number": envvar.GetTestProjectNumberFromEnv(),
 		"random_suffix":  acctest.RandString(t, 10),
 	}
@@ -63,10 +65,25 @@ resource "google_securityposture_posture" "posture_one" {
                     policy_rules {
                         enforce = true
                     }
+                    policy_rules {
+                        enforce = false
+                        condition {
+                            title = "Disable constraint for test"
+                            description = "Disable constraint for test"
+                            expression = "resource.matchTagId('tagKeys/123', 'tagValues/345')"
+                        }
+                    }
                 }
             }
         }
     }
+}
+
+resource "google_project" "posture_project" {
+  name       = "Posture Project"
+  project_id = "tf-test-posture-%{random_suffix}"
+  org_id     = "%{org_id}"
+  deletion_policy = "DELETE"
 }
 
 resource "google_securityposture_posture_deployment" "postureDeployment_one" {
@@ -74,7 +91,7 @@ resource "google_securityposture_posture_deployment" "postureDeployment_one" {
     parent = "organizations/%{org_id}"
     location = "global"
     description = "a new posture deployment"
-    target_resource = "projects/%{project_number}"
+    target_resource = "projects/${google_project.posture_project.number}"
     posture_id = google_securityposture_posture.posture_one.name
     posture_revision_id = google_securityposture_posture.posture_one.revision_id
 }
@@ -100,10 +117,25 @@ resource "google_securityposture_posture" "posture_one" {
                     policy_rules {
                         enforce = true
                     }
+                    policy_rules {
+                        enforce = false
+                        condition {
+                            title = "Disable constraint for test"
+                            description = "Disable constraint for test"
+                            expression = "resource.matchTagId('tagKeys/123', 'tagValues/345')"
+                        }
+                    }
                 }
             }
         }
     }
+}
+
+resource "google_project" "posture_project" {
+  name       = "Posture Project"
+  project_id = "tf-test-posture-%{random_suffix}"
+  org_id     = "%{org_id}"
+  deletion_policy = "DELETE"
 }
 
 resource "google_securityposture_posture_deployment" "postureDeployment_one" {
@@ -111,7 +143,7 @@ resource "google_securityposture_posture_deployment" "postureDeployment_one" {
     parent = "organizations/%{org_id}"
     location = "global"
     description = "an updated posture deployment"
-    target_resource = "projects/%{project_number}"
+    target_resource = "projects/${google_project.posture_project.number}"
     posture_id = google_securityposture_posture.posture_one.name
     posture_revision_id = google_securityposture_posture.posture_one.revision_id
 }

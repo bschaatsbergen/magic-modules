@@ -2,16 +2,17 @@ package accesscontextmanager_test
 
 import (
 	"fmt"
+	"os"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-provider-google/google/acctest"
 	"github.com/hashicorp/terraform-provider-google/google/envvar"
+	_ "github.com/hashicorp/terraform-provider-google/google/services/accesscontextmanager"
+	_ "github.com/hashicorp/terraform-provider-google/google/services/resourcemanager"
 )
 
-func TestAccAccessContextManagerAccessPolicyIamBinding(t *testing.T) {
-	acctest.SkipIfVcr(t)
-
+func testAccAccessContextManagerAccessPolicyIamBinding(t *testing.T) {
 	org := envvar.GetTestOrgFromEnv(t)
 	account := "tf-test-" + acctest.RandString(t, 10)
 	role := "roles/accesscontextmanager.policyAdmin"
@@ -32,9 +33,7 @@ func TestAccAccessContextManagerAccessPolicyIamBinding(t *testing.T) {
 	})
 }
 
-func TestAccAccessContextManagerAccessPolicyIamMember(t *testing.T) {
-	acctest.SkipIfVcr(t)
-
+func testAccAccessContextManagerAccessPolicyIamMember(t *testing.T) {
 	org := envvar.GetTestOrgFromEnv(t)
 	account := "tf-test-" + acctest.RandString(t, 10)
 	role := "roles/accesscontextmanager.policyAdmin"
@@ -45,7 +44,7 @@ func TestAccAccessContextManagerAccessPolicyIamMember(t *testing.T) {
 		Steps: []resource.TestStep{
 			{
 				// Test IAM Binding creation
-				Config: testAccAccessContextManagerAccessPolicyIamMember(policy, account, role),
+				Config: testAccAccessContextManagerAccessPolicyIamMember_basic(policy, account, role),
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttr(
 						"google_access_context_manager_access_policy_iam_member.member", "role", role),
@@ -57,9 +56,7 @@ func TestAccAccessContextManagerAccessPolicyIamMember(t *testing.T) {
 	})
 }
 
-func TestAccAccessContextManagerAccessPolicyIamPolicy(t *testing.T) {
-	acctest.SkipIfVcr(t)
-
+func testAccAccessContextManagerAccessPolicyIamPolicy(t *testing.T) {
 	org := envvar.GetTestOrgFromEnv(t)
 	account := "tf-test-" + acctest.RandString(t, 10)
 	role := "roles/accesscontextmanager.policyAdmin"
@@ -70,7 +67,7 @@ func TestAccAccessContextManagerAccessPolicyIamPolicy(t *testing.T) {
 		Steps: []resource.TestStep{
 			{
 				// Test IAM Binding creation
-				Config: testAccAccessContextManagerAccessPolicyIamPolicy(policy, account, role),
+				Config: testAccAccessContextManagerAccessPolicyIamPolicy_basic(policy, account, role),
 			},
 		},
 	})
@@ -93,7 +90,7 @@ resource google_access_context_manager_access_policy_iam_binding binding {
 `, account, role)
 }
 
-func testAccAccessContextManagerAccessPolicyIamMember(policy, account, role string) string {
+func testAccAccessContextManagerAccessPolicyIamMember_basic(policy, account, role string) string {
 	return fmt.Sprintf(policy+`
 resource "google_service_account" "test-account" {
   account_id   = "%s"
@@ -109,7 +106,7 @@ resource google_access_context_manager_access_policy_iam_member member {
 `, account, role)
 }
 
-func testAccAccessContextManagerAccessPolicyIamPolicy(policy, account, role string) string {
+func testAccAccessContextManagerAccessPolicyIamPolicy_basic(policy, account, role string) string {
 	return fmt.Sprintf(policy+`
 resource "google_service_account" "test-account" {
   account_id   = "%s"
@@ -132,11 +129,18 @@ resource google_access_context_manager_access_policy_iam_policy policy {
 }
 
 func createScopedPolicy(t *testing.T, org string) string {
+	// Scoped AccessPolicies require both an org with the feature enabled and
+	// quota to create an additional org-level policy. Skip when the test env
+	// signals it does not support this (mirrors the GOOGLE_ORG_DOMAIN gating
+	// used by gcp_user_access_binding).
+	if os.Getenv("GOOGLE_ACM_SCOPED_POLICIES_ENABLED") == "" {
+		t.Skip("GOOGLE_ACM_SCOPED_POLICIES_ENABLED is not set; skipping test that requires a scoped AccessPolicy")
+	}
 	rand := acctest.RandString(t, 10)
 	return fmt.Sprintf(`
 		resource "google_project" "project" {
-		project_id      = "acm-tf-test-%s"
-		name            = "acm-tf-test-%s"
+		project_id      = "tf-test-acm-%s"
+		name            = "tf-test-acm-%s"
 		org_id          = "%s"
 		deletion_policy = "DELETE"
 		}

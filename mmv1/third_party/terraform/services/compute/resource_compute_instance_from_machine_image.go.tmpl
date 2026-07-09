@@ -1,0 +1,458 @@
+package compute
+{{- if ne $.TargetVersionName "ga" }}
+
+import (
+	"encoding/json"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-google/google/registry"
+	"github.com/hashicorp/terraform-provider-google/google/tpgresource"
+	transport_tpg "github.com/hashicorp/terraform-provider-google/google/transport"
+)
+
+func ResourceComputeInstanceFromMachineImage() *schema.Resource {
+	return &schema.Resource{
+		Create: resourceComputeInstanceFromMachineImageCreate,
+		Read:   resourceComputeInstanceRead,
+		Update: resourceComputeInstanceUpdate,
+		Delete: resourceComputeInstanceDelete,
+
+		// Import doesn't really make sense, because you could just import
+		// as a google_compute_instance.
+
+		Timeouts: ResourceComputeInstance().Timeouts,
+
+		Schema:        computeInstanceFromMachineImageSchema(),
+		CustomizeDiff: ResourceComputeInstance().CustomizeDiff,
+		UseJSONNumber: true,
+	}
+}
+
+func computeInstanceFromMachineImageSchema() map[string]*schema.Schema {
+	s := ResourceComputeInstance().Schema
+
+	for _, field := range []string{"boot_disk", "machine_type", "network_interface"} {
+		// The user can set these fields as an override, but doesn't need to -
+		// the machine image values will be used if they're unset.
+		s[field].Required = false
+		s[field].Optional = true
+	}
+
+	recurseOnSchema(s, func(field *schema.Schema) {
+		// We don't want to accidentally use default values to override the instance
+		// machine image, so remove defaults.
+		field.Default = nil
+
+		// Make non-required fields computed since they'll be set by the template.
+		// Leave deprecated and removed fields alone because we don't set them.
+		if !field.Required && !(field.Deprecated != "") {
+			field.Computed = true
+		}
+	})
+
+	s["source_machine_image"] = &schema.Schema{
+		Type:        schema.TypeString,
+		Required:    true,
+		ForceNew:    true,
+		Description: `Name or self link of a machine image to create the instance from on.`,
+	}
+
+	s["source_machine_image_encryption_key"] = &schema.Schema{
+		Type:        schema.TypeList,
+		Optional:    true,
+		MaxItems:    1,
+		Description: `Encryption key for the source machine image.`,
+		ForceNew:    true,
+		Elem: &schema.Resource{
+			Schema: map[string]*schema.Schema{
+				"raw_key": {
+					Type:      schema.TypeString,
+					Optional:  true,
+					Sensitive: true,
+				},
+				"rsa_encrypted_key": {
+					Type:      schema.TypeString,
+					Optional:  true,
+					Sensitive: true,
+					ForceNew:  true,
+				},
+				"kms_key_name": {
+					Type:      schema.TypeString,
+					Optional:  true,
+					ForceNew:  true,
+				},
+				"kms_key_service_account": {
+					Type:     schema.TypeString,
+					Optional: true,
+					ForceNew: true,
+				},
+				"sha256": {
+					Type:     schema.TypeString,
+					Computed: true,
+				},
+			},
+		},
+	}
+
+	// Modifying the schema to disable disk overrides, due to an API bug (b/170964971)
+	// TODO: (camthornton) Remove this when disk override functionality in the API is restored
+	for _, field := range []string{"boot_disk", "attached_disk", "scratch_disk"} {
+		s[field].Required = false
+		s[field].Optional = false
+		s[field].Computed = true
+		s[field].MaxItems = 0
+	}
+	bootDiskSchema := s["boot_disk"].Elem.(*schema.Resource).Schema
+	for _, field := range bootDiskSchema {
+		field.AtLeastOneOf = []string{}
+		field.ConflictsWith = []string{}
+	}
+	initializeParamsSchema := bootDiskSchema["initialize_params"].Elem.(*schema.Resource).Schema
+	for _, field := range initializeParamsSchema {
+		field.AtLeastOneOf = []string{}
+	}
+	// End disk schema modifications
+
+	return s
+}
+
+func resourceComputeInstanceFromMachineImageCreate(d *schema.ResourceData, meta interface{}) error {
+	config := meta.(*transport_tpg.Config)
+	userAgent, err :=  tpgresource.GenerateUserAgentString(d, config.UserAgent)
+	if err != nil {
+		return err
+	}
+
+	project, err := tpgresource.GetProject(d, config)
+	if err != nil {
+		return err
+	}
+
+	z, err := tpgresource.GetZone(d, config)
+	if err != nil {
+		return err
+	}
+
+	instance, err := expandComputeInstance(project, d, config)
+	if err != nil {
+		return err
+	}
+
+	// Force send all top-level fields that have been set in case they're overridden to zero values.
+	// Initialize ForceSendFields to empty so we don't get things that the instance resource
+	// always force-sends.
+	instance.ForceSendFields = []string{}
+	for f, s := range computeInstanceFromMachineImageSchema() {
+		// It seems that GetOkExists always returns true for sets.
+		// TODO: confirm this and file issue against Terraform core.
+		// In the meantime, don't force send sets.
+		if s.Type == schema.TypeSet {
+			continue
+		}
+
+		if _, exists := d.GetOkExists(f); exists {
+			// Assume for now that all fields are exact snake_case versions of the API fields.
+			// This won't necessarily always be true, but it serves as a good approximation and
+			// can be adjusted later as we discover issues.
+			instance.ForceSendFields = append(instance.ForceSendFields,  tpgresource.SnakeToPascalCase(f))
+		}
+	}
+
+	instanceBytes, err := json.Marshal(instance)
+	if err != nil {
+		return fmt.Errorf("Error marshaling instance: %s", err)
+	}
+	instanceBody := map[string]interface{}{}
+	if err = json.Unmarshal(instanceBytes, &instanceBody); err != nil {
+		return fmt.Errorf("Error processing instance body: %s", err)
+	}
+
+	sa := d.Get("service_account").([]interface{})
+	if len(sa) == 0 {
+		// ServiceAccount is required when the image is from a different project
+		instanceBody["serviceAccounts"] = []interface{}{
+			map[string]interface{}{
+				"email": "default",
+			},
+		}
+	}
+
+	src := d.Get("source_machine_image").(string)
+	instanceBody["sourceMachineImage"] = src
+
+	// Add source machine image encryption key if specified
+	if encryptionKey := expandSourceMachineImageEncryptionKey(d); encryptionKey != nil {
+		instanceBody["sourceMachineImageEncryptionKey"] = encryptionKey
+	}
+
+	tpl, err := tpgresource.ParseMachineImageFieldValue(src, d, config)
+	if err != nil {
+		return err
+	}
+
+	// obtain the project where the image resides (could be different from the default)
+	tmp := strings.Split(src, "projects/")
+	mi_project := strings.Split(tmp[len(tmp)-1], "/")[0]
+
+	miURL := fmt.Sprintf("%sprojects/%s/global/machineImages/%s", transport_tpg.BaseUrl(Product, config), mi_project, tpl.Name)
+	miRes, err := transport_tpg.SendRequest(transport_tpg.SendRequestOptions{
+		Config:    config,
+		Method:    "GET",
+		Project:   mi_project,
+		RawURL:    miURL,
+		UserAgent: userAgent,
+	})
+	if err != nil {
+		return err
+	}
+
+	disks, err := adjustInstanceFromMachineImageDisks(d, config, miRes, project)
+	if err != nil {
+		return err
+	}
+	instanceBody["disks"] = disks
+
+	// when we make the original call to expandComputeInstance expandScheduling is called, which sets default values.
+	// However, we want the values to be read from the machine image instead.
+	if _, hasSchedule := d.GetOk("scheduling"); !hasSchedule {
+		if srcProps, ok := miRes["sourceInstanceProperties"].(map[string]interface{}); ok {
+			if schedulingRaw, ok := srcProps["scheduling"].(map[string]interface{}); ok {
+				// Drop zero-value fields so the marshaled body matches the
+				// behavior of the typed compute.Scheduling JSON tags (omitempty).
+				filtered := map[string]interface{}{}
+				for k, v := range schedulingRaw {
+					switch val := v.(type) {
+					case bool:
+						if val {
+							filtered[k] = v
+						}
+					case string:
+						if val != "" {
+							filtered[k] = v
+						}
+					case float64:
+						if val != 0 {
+							filtered[k] = v
+						}
+					case nil:
+						// skip
+					default:
+						filtered[k] = v
+					}
+				}
+				instanceBody["scheduling"] = filtered
+			}
+		}
+	}
+
+	log.Printf("[INFO] Requesting instance creation")
+	insertURL := fmt.Sprintf("%sprojects/%s/zones/%s/instances", transport_tpg.BaseUrl(Product, config), project, z)
+	res, err := transport_tpg.SendRequest(transport_tpg.SendRequestOptions{
+		Config:    config,
+		Method:    "POST",
+		Project:   project,
+		RawURL:    insertURL,
+		UserAgent: userAgent,
+		Body:      instanceBody,
+	})
+	if err != nil {
+		return fmt.Errorf("Error creating instance: %s", err)
+	}
+
+	// Store the ID now
+	d.SetId(fmt.Sprintf("projects/%s/zones/%s/instances/%s", project, z, instance.Name))
+
+	// Wait for the operation to complete
+	err = ComputeOperationWaitTime(config, res, project,
+		"instance to create", userAgent, d.Timeout(schema.TimeoutCreate))
+	if err != nil {
+		// The resource didn't actually create
+		d.SetId("")
+		return err
+	}
+
+	return resourceComputeInstanceRead(d, meta)
+}
+
+// Instances have disks spread across multiple schema properties. This function
+// ensures that overriding one of these properties does not override the others.
+func adjustInstanceFromMachineImageDisks(d *schema.ResourceData, config *transport_tpg.Config, miRes map[string]interface{}, project string) ([]interface{}, error) {
+	disks := []interface{}{}
+
+	var miDisks []interface{}
+	if srcProps, ok := miRes["sourceInstanceProperties"].(map[string]interface{}); ok {
+		if diskList, ok := srcProps["disks"].([]interface{}); ok {
+			miDisks = diskList
+		}
+	}
+
+	if _, hasBootDisk := d.GetOk("boot_disk"); hasBootDisk {
+		bootDisk, err := expandBootDiskTyped(d, config, project)
+		if err != nil {
+			return nil, err
+		}
+		disks = append(disks, bootDisk)
+	} else {
+		// boot disk was not overridden, so use the one from the machine image
+		for _, rawDisk := range miDisks {
+			disk, ok := rawDisk.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if isBoot, _ := disk["boot"].(bool); isBoot {
+				autoDelete, _ := disk["autoDelete"].(bool)
+				diskType, _ := disk["type"].(string)
+				deviceName, _ := disk["deviceName"].(string)
+				newdisk := map[string]interface{}{
+					"autoDelete": autoDelete,
+					"type":       diskType,
+					"deviceName": deviceName,
+				}
+				disks = append(disks, newdisk)
+				break
+			}
+		}
+	}
+
+	if _, hasScratchDisk := d.GetOk("scratch_disk"); hasScratchDisk {
+		scratchDisks, err := expandScratchDisksTyped(d, config, project)
+		if err != nil {
+			return nil, err
+		}
+		for _, sd := range scratchDisks {
+			disks = append(disks, sd)
+		}
+	} else {
+		// scratch disks were not overridden, so use the ones from the machine image
+		for _, rawDisk := range miDisks {
+			disk, ok := rawDisk.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			diskType, _ := disk["type"].(string)
+			if diskType == "SCRATCH" {
+				autoDelete, _ := disk["autoDelete"].(bool)
+				deviceName, _ := disk["deviceName"].(string)
+				newdisk := map[string]interface{}{
+					"autoDelete": autoDelete,
+					"type":       "SCRATCH",
+					"deviceName": deviceName,
+				}
+				disks = append(disks, newdisk)
+			}
+		}
+	}
+
+	attachedDisksCount := d.Get("attached_disk.#").(int)
+	if attachedDisksCount > 0 {
+		for i := 0; i < attachedDisksCount; i++ {
+			diskConfig := d.Get(fmt.Sprintf("attached_disk.%d", i)).(map[string]interface{})
+			disk, err := expandAttachedDiskTyped(diskConfig, d, config)
+			if err != nil {
+				return nil, err
+			}
+
+			disks = append(disks, disk)
+		}
+	} else {
+		// attached disks were not overridden, so use the ones from the machine image
+		for _, rawDisk := range miDisks {
+			disk, ok := rawDisk.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			isBoot, _ := disk["boot"].(bool)
+			diskType, _ := disk["type"].(string)
+			if !isBoot && diskType != "SCRATCH" {
+				autoDelete, _ := disk["autoDelete"].(bool)
+				deviceName, _ := disk["deviceName"].(string)
+				newdisk := map[string]interface{}{
+					"autoDelete": autoDelete,
+					"type":       diskType,
+					"deviceName": deviceName,
+				}
+				disks = append(disks, newdisk)
+			}
+		}
+	}
+
+	return disks, nil
+}
+
+func expandSourceMachineImageEncryptionKey(d tpgresource.TerraformResourceData) map[string]interface{} {
+	if v, ok := d.GetOk("source_machine_image_encryption_key"); !ok || v == nil {
+		return nil
+	}
+
+	encryptionKeyList := d.Get("source_machine_image_encryption_key").([]interface{})
+	if len(encryptionKeyList) == 0 || encryptionKeyList[0] == nil {
+		return nil
+	}
+
+	encryptionKeyMap := encryptionKeyList[0].(map[string]interface{})
+	encryptionKey := map[string]interface{}{}
+
+	if rawKey, ok := encryptionKeyMap["raw_key"]; ok && rawKey != "" {
+		encryptionKey["rawKey"] = rawKey.(string)
+	}
+
+	if rsaKey, ok := encryptionKeyMap["rsa_encrypted_key"]; ok && rsaKey != "" {
+		encryptionKey["rsaEncryptedKey"] = rsaKey.(string)
+	}
+
+	if kmsKey, ok := encryptionKeyMap["kms_key_name"]; ok && kmsKey != "" {
+		encryptionKey["kmsKeyName"] = kmsKey.(string)
+	}
+
+	if kmsKeyServiceAccount, ok := encryptionKeyMap["kms_key_service_account"]; ok && kmsKeyServiceAccount != "" {
+		encryptionKey["kmsKeyServiceAccount"] = kmsKeyServiceAccount.(string)
+	}
+
+	return encryptionKey
+}
+
+func flattenSourceMachineImageEncryptionKey(key map[string]interface{}) []map[string]interface{} {
+	if key == nil {
+		return nil
+	}
+
+	m := map[string]interface{}{}
+
+	if rawKey, ok := key["rawKey"].(string); ok && rawKey != "" {
+		m["raw_key"] = rawKey
+	}
+
+	if rsaKey, ok := key["rsaEncryptedKey"].(string); ok && rsaKey != "" {
+		m["rsa_encrypted_key"] = rsaKey
+	}
+
+	if kmsKey, ok := key["kmsKeyName"].(string); ok && kmsKey != "" {
+		m["kms_key_name"] = kmsKey
+	}
+
+	if kmsKeyServiceAccount, ok := key["kmsKeyServiceAccount"].(string); ok && kmsKeyServiceAccount != "" {
+		m["kms_key_service_account"] = kmsKeyServiceAccount
+	}
+
+	if sha256, ok := key["sha256"].(string); ok && sha256 != "" {
+		m["sha256"] = sha256
+	}
+
+	return []map[string]interface{}{m}
+}
+
+func init() {
+	registry.Schema{
+		Name: "google_compute_instance_from_machine_image",
+		ProductName: "compute",
+		Type: registry.SchemaTypeResource,
+		Schema: ResourceComputeInstanceFromMachineImage(),
+	}.Register()
+}
+
+{{- else }}
+// Magic Modules doesn't let us remove files - blank out beta-only common-compile files for now.
+{{- end }}

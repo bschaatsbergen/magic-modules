@@ -7,6 +7,7 @@ import (
 
 	"github.com/hashicorp/terraform-provider-google/google/acctest"
 	"github.com/hashicorp/terraform-provider-google/google/envvar"
+	_ "github.com/hashicorp/terraform-provider-google/google/services/clouddeploy"
 )
 
 func TestAccClouddeployAutomation_update(t *testing.T) {
@@ -40,6 +41,15 @@ func TestAccClouddeployAutomation_update(t *testing.T) {
 				ImportStateVerify:       true,
 				ImportStateVerifyIgnore: []string{"location", "delivery_pipeline", "annotations", "labels", "terraform_labels"},
 			},
+			{
+				Config: testAccClouddeployAutomation_basic(context),
+			},
+			{
+				ResourceName:            "google_clouddeploy_automation.automation",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"location", "delivery_pipeline", "annotations", "labels", "terraform_labels"},
+			},
 		},
 	})
 }
@@ -57,12 +67,35 @@ resource "google_clouddeploy_automation" "automation" {
       labels = {}
     }
   }
-  rules {
-    advance_rollout_rule {
-      id                    = "advance-rollout"
-      source_phases         = ["deploy"]
-      wait                  = "200s"
+    rules {
+    promote_release_rule {
+      id = "promote-release"
     }
+  }
+  rules {
+      advance_rollout_rule {
+        id                    = "advance-rollout"
+      }
+    }
+  rules {
+    repair_rollout_rule {
+      id                    = "repair-rollout"
+      repair_phases {
+      retry  {
+                      attempts = "1"
+                  }
+       }
+      repair_phases {
+             rollback {}
+          }
+      }
+  }
+  rules {
+    timed_promote_release_rule {
+      id                    = "timed-promote-release"
+      schedule              = "0 9 * * 1"
+      time_zone              = "America/New_York"
+     }
   }
 }
 
@@ -118,6 +151,35 @@ resource "google_clouddeploy_automation" "automation" {
       wait = "200s"
       destination_target_id = "@next"
       destination_phase = "stable"
+    }
+  }
+  rules {
+    repair_rollout_rule {
+      id                    = "repair-rollout"
+      phases                = ["stable"]
+      jobs                  = ["deploy"]
+      repair_phases {
+          retry  {
+                      attempts = "1"
+                      wait     = "200s"
+                      backoff_mode = "BACKOFF_MODE_LINEAR"
+                  }
+       }
+      repair_phases {
+             rollback {
+                         destination_phase = "stable"
+                         disable_rollback_if_rollout_pending = true
+                      }
+          }
+    }
+  }
+  rules {
+    timed_promote_release_rule {
+      id                    = "timed-promote-release"
+      destination_target_id   = "@next"
+      schedule              = "0 9 * * 1"
+      time_zone              = "America/New_York"
+      destination_phase      = "stable"
     }
   }
 }

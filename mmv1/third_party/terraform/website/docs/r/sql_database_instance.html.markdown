@@ -6,7 +6,7 @@ description: |-
 
 # google_sql_database_instance
 
-Creates a new Google SQL Database Instance. For more information, see the [official documentation](https://cloud.google.com/sql/),
+Creates a new Google SQL Database Instance. For more information, see the [official documentation](https://cloud.google.com/sql/docs/mysql/create-instance),
 or the [JSON API](https://cloud.google.com/sql/docs/admin-api/v1beta4/instances).
 
 ~> **NOTE on `google_sql_database_instance`:** - Second-generation instances include a
@@ -173,6 +173,26 @@ resource "google_sql_database_instance" "main" {
 }
 ```
 
+### Cloud SQL Instance with Managed Connection Pooling
+```hcl
+resource "google_sql_database_instance" "instance" {
+  name             = "mcp-enabled-main-instance"
+  region           = "us-central1"
+  database_version = "POSTGRES_16"
+  settings {
+    tier    = "db-perf-optimized-N-2"
+    edition = "ENTERPRISE_PLUS"
+	  connection_pool_config {
+		  connection_pooling_enabled = true
+      flags {
+			  name = "max_client_connections"
+			  value = "1980"
+		  }
+	  }
+  }
+}
+```
+
 ### Cloud SQL Instance with PSC connectivity
 
 ```hcl
@@ -197,6 +217,122 @@ resource "google_sql_database_instance" "main" {
 }
 ```
 
+### Cloud SQL Instance with PSC auto connections
+
+```hcl
+resource "google_sql_database_instance" "main" {
+  name             = "psc-enabled-main-instance"
+  database_version = "MYSQL_8_0"
+  settings {
+    tier    = "db-f1-micro"
+    ip_configuration {
+      psc_config {
+        psc_enabled = true
+        allowed_consumer_projects = ["allowed-consumer-project-name"]
+        psc_auto_connections {
+          consumer_network = "network-name"
+          consumer_service_project_id = "project-id"
+        }
+      }
+      ipv4_enabled = false
+    }
+    backup_configuration {
+      enabled = true
+      binary_log_enabled = true
+    }
+    availability_type = "REGIONAL"
+  }
+}
+```
+
+### Cloud SQL Instance with PSC outbound
+
+```hcl
+resource "google_sql_database_instance" "main" {
+  name             = "psc-enabled-main-instance"
+  database_version = "MYSQL_8_0"
+  settings {
+    tier    = "db-f1-micro"
+    ip_configuration {
+      psc_config {
+        psc_enabled = true
+        allowed_consumer_projects = ["allowed-consumer-project-name"]
+        network_attachment_uri = "network-attachment-uri"
+      }
+      ipv4_enabled = false
+    }
+    backup_configuration {
+      enabled = true
+      binary_log_enabled = true
+    }
+    availability_type = "REGIONAL"
+  }
+}
+```
+
+### Cloud SQL Instance created with backupdr_backup
+~> **NOTE:** For restoring from a backupdr_backup, note that the backup must be in active state. List down the backups using `google_backup_dr_backup`. Replace `backupdr_backup_full_path` with the backup name.
+
+```hcl
+resource "google_sql_database_instance" "instance" {
+  name             = "main-instance"
+  database_version = "MYSQL_8_0"
+  settings {
+    tier    = "db-f1-micro"
+    backup_configuration {
+      enabled = true
+      binary_log_enabled = true
+    }
+  }
+  backupdr_backup = "backupdr_backup_full_path"
+}
+```
+
+### Cloud SQL Instance created using point_in_time_restore
+~> **NOTE:** Replace `backupdr_datasource` with the full datasource path, `time_stamp` should be in the format of `YYYY-MM-DDTHH:MM:SSZ`. The `target_instance` is required field and must match the name of the resource.
+
+```hcl
+resource "google_sql_database_instance" "instance" {
+  name             = "main-instance"
+  database_version = "MYSQL_8_0"
+  settings {
+    tier    = "db-f1-micro"
+    backup_configuration {
+      enabled = true
+      binary_log_enabled = true
+    }
+  }
+  point_in_time_restore_context {
+   datasource      = "backupdr_datasource"
+   target_instance = "main-instance"
+   point_in_time   = "time_stamp"
+ }
+}
+```
+
+### Cloud SQL Instance created using point_in_time_restore using multiregion datasource
+~> **NOTE:** Replace `backupdr_datasource` with the full datasource path, `time_stamp` should be in the format of `YYYY-MM-DDTHH:MM:SSZ` and `region` with the target instance region. The `target_instance` is required field and must match the name of the resource.
+
+```hcl
+resource "google_sql_database_instance" "instance" {
+  name             = "main-instance"
+  database_version = "MYSQL_8_0"
+  settings {
+    tier    = "db-f1-micro"
+    backup_configuration {
+      enabled = true
+      binary_log_enabled = true
+    }
+  }
+  point_in_time_restore_context {
+   datasource      = "backupdr_datasource"
+   target_instance = "main-instance"
+   point_in_time   = "time_stamp"
+   region          = "region"
+ }
+}
+```
+
 ## Argument Reference
 
 The following arguments are supported:
@@ -211,11 +347,11 @@ The following arguments are supported:
 
 * `database_version` - (Required) The MySQL, PostgreSQL or
 SQL Server version to use. Supported values include `MYSQL_5_6`,
-`MYSQL_5_7`, `MYSQL_8_0`, `POSTGRES_9_6`,`POSTGRES_10`, `POSTGRES_11`,
-`POSTGRES_12`, `POSTGRES_13`, `POSTGRES_14`, `POSTGRES_15`, `SQLSERVER_2017_STANDARD`,
-`SQLSERVER_2017_ENTERPRISE`, `SQLSERVER_2017_EXPRESS`, `SQLSERVER_2017_WEB`.
-`SQLSERVER_2019_STANDARD`, `SQLSERVER_2019_ENTERPRISE`, `SQLSERVER_2019_EXPRESS`,
-`SQLSERVER_2019_WEB`.
+`MYSQL_5_7`, `MYSQL_8_0`, `MYSQL_8_4`, `POSTGRES_9_6`,`POSTGRES_10`, `POSTGRES_11`,
+`POSTGRES_12`, `POSTGRES_13`, `POSTGRES_14`, `POSTGRES_15`, `POSTGRES_16`, `POSTGRES_17`, `POSTGRES_18`,
+`SQLSERVER_2022_STANDARD`, `SQLSERVER_2022_ENTERPRISE`, `SQLSERVER_2022_EXPRESS`,
+`SQLSERVER_2022_WEB`, `SQLSERVER_2025_STANDARD`, `SQLSERVER_2025_ENTERPRISE`,
+`SQLSERVER_2025_EXPRESS`, `SQLSERVER_2025_WEB`.
 [Database Version Policies](https://cloud.google.com/sql/docs/db-versions)
 includes an up-to-date reference of supported versions.
 
@@ -234,9 +370,17 @@ includes an up-to-date reference of supported versions.
     is not provided, the provider project is used.
 
 * `replica_configuration` - (Optional) The configuration for replication. The
-    configuration is detailed below. Valid only for MySQL instances.
+    configuration is detailed below.
+
+* `replica_names` - (Optional, Computed) List of replica names. Can be updated.
 
 * `root_password` - (Optional) Initial root password. Can be updated. Required for MS SQL Server.
+
+* `root_password_wo` - (Optional) Initial root password. Can be updated. Required for MS SQL Server. **Note**: This property is write-only and will not be read from the API.
+
+  ~> **Note:** One of `root_password` or `root_password_wo` can only be set.
+
+* `root_password_wo_version` - Triggers update of `root_password_wo` write-only. Increment this value when an update to `root_password_wo` is needed. For more info see [updating write-only arguments](/docs/providers/google/guides/using_write_only_arguments.html#updating-write-only-arguments)
 
 * `encryption_key_name` - (Optional)
     The full path to the encryption key used for the CMEK disk encryption.  Setting
@@ -255,7 +399,19 @@ includes an up-to-date reference of supported versions.
 
   ~> **NOTE:** This flag only protects instances from deletion within Terraform. To protect your instances from accidental deletion across all surfaces (API, gcloud, Cloud Console and Terraform), use the API flag `settings.deletion_protection_enabled`.
 
+* `enforce_new_sql_network_architecture` - (Optional) Whether to enforce the new SQL network architecture. 
+    By default, new Cloud SQL instances created in projects created after August 2021 use the new network architecture. 
+    This follows the gcloud pattern where the flag is an irreversible opt-in.
+    See [official documentation](https://docs.cloud.google.com/sql/docs/mysql/upgrade-cloud-sql-instance-new-network-architecture#new-arch) for more details.
+
+* `final_backup_description` - (Optional) The description of final backup. Only set this field when `final_backup_config.enabled` is true.
+
 * `restore_backup_context` - (optional) The context needed to restore the database to a backup run. This field will
+    cause Terraform to trigger the database to restore from the backup run indicated. The configuration is detailed below.
+    **NOTE:** Restoring from a backup is an imperative action and not recommended via Terraform. Adding or modifying this
+    block during resource creation/update will trigger the restore action after the resource is created/updated.
+
+*  `backupdr_backup` - (optional) The backupdr_backup needed to restore the database to a backup run. This field will
     cause Terraform to trigger the database to restore from the backup run indicated. The configuration is detailed below.
     **NOTE:** Restoring from a backup is an imperative action and not recommended via Terraform. Adding or modifying this
     block during resource creation/update will trigger the restore action after the resource is created/updated.
@@ -264,29 +420,59 @@ includes an up-to-date reference of supported versions.
     resource creation, Terraform will attempt to clone another instance as indicated in the context. The
     configuration is detailed below.
 
+* `point_in_time_restore_context` - (Optional) The point_in_time_restore_context needed for performing a point-in-time recovery of an instance managed by Google Cloud Backup and Disaster Recovery. This field will
+    cause Terraform to trigger the database to restore to a point in time indicated. The configuration is detailed below.
+    **NOTE:** Restoring from a backup is an imperative action and not recommended via Terraform. Adding or modifying this
+    block during resource creation/update will trigger the restore action after the resource is created/updated.
+
+* `deletion_policy` - (Optional) Whether Terraform will be prevented from destroying the resource. Defaults to "DELETE".
+    When a 'terraform destroy' or 'terraform apply' would delete the resource,
+    the command will fail if this field is set to "PREVENT" in Terraform state.
+    When set to "ABANDON", the command will remove the resource from Terraform
+    management without updating or deleting the resource in the API.
+    When set to "DELETE", deleting the resource is allowed.
+    
 The `settings` block supports:
 
 * `tier` - (Required) The machine type to use. See [tiers](https://cloud.google.com/sql/docs/admin-api/v1beta4/tiers)
     for more details and supported versions. Postgres supports only shared-core machine types,
-    and custom machine types such as `db-custom-2-13312`. See the [Custom Machine Type Documentation](https://cloud.google.com/compute/docs/instances/creating-instance-with-custom-machine-type#create) to learn about specifying custom machine types.
+    and custom machine types such as `db-custom-2-13312`. See the [Custom Machine Type Documentation](https://cloud.google.com/compute/docs/instances/creating-instance-with-custom-machine-type#create) to learn about specifying custom machine types. Note that shared-core and custom machine types are valid only under the `ENTERPRISE` edition; PostgreSQL 16+ instances default to `ENTERPRISE_PLUS` when `edition` is unset (see the `edition` argument below).
 
-* `edition` - (Optional) The edition of the instance, can be `ENTERPRISE` or `ENTERPRISE_PLUS`.
+* `edition` - (Optional) The edition of the instance, can be `ENTERPRISE` or `ENTERPRISE_PLUS`. If `edition`
+    is not set, the Cloud SQL API determines the default based on `database_version`: instances with
+    `database_version` `POSTGRES_16` or later default to `ENTERPRISE_PLUS`, while all others default to
+    `ENTERPRISE`. Note that `ENTERPRISE_PLUS` supports only predefined `db-perf-optimized-N-*` machine
+    types (the `N2`/`C4A` series); shared-core and custom tiers such as `db-g1-small`, `db-f1-micro`, and
+    `db-custom-*` require `edition = "ENTERPRISE"`. Omitting `edition` on a PostgreSQL 16+ instance while
+    setting a shared-core or custom `tier` therefore fails at create time with
+    `Invalid Tier (...) for (ENTERPRISE_PLUS) Edition`.
 
 * `user_labels` - (Optional) A set of key/value user label pairs to assign to the instance.
+
+* `auto_upgrade_enabled` - (Optional) Enables
+    [Automatic Version Upgrade](https://cloud.google.com/sql/docs/mysql/upgrade-minor-db-version#auto-upgrade)
+    feature. When this field is set to `true`, Automatic Upgrade is enabled for
+    `MYSQL_8_0` based minor versions. The `database_version` must be
+    `MYSQL_8_0_35` or higher. Can be used with MySQL only. Can't be unset or
+    changed if set to `true`.
 
 * `activation_policy` - (Optional) This specifies when the instance should be
     active. Can be either `ALWAYS`, `NEVER` or `ON_DEMAND`.
 
 * `availability_type` - (Optional) The availability type of the Cloud SQL
-  instance, high availability (`REGIONAL`) or single zone (`ZONAL`).' For all instances, ensure that
+  instance, high availability (`REGIONAL`) or single zone (`ZONAL`). For all instances, ensure that
   `settings.backup_configuration.enabled` is set to `true`.
   For MySQL instances, ensure that `settings.backup_configuration.binary_log_enabled` is set to `true`.
   For Postgres and SQL Server instances, ensure that `settings.backup_configuration.point_in_time_recovery_enabled`
   is set to `true`. Defaults to `ZONAL`.
+  For read pool instances, this field is read-only. The availability type is changed by specifying
+  the number of nodes (`node_count`).
 
 * `collation` - (Optional) The name of server instance collation.
 
-* `connector_enforcement` - (Optional) Enables the enforcement of Cloud SQL Auth Proxy or Cloud SQL connectors for all the connections. If enabled, all the direct connections are rejected.
+* `connector_enforcement` - (Optional) Control the enforcement of Cloud SQL Auth Proxy or Cloud SQL connectors for all the connections, can be `REQUIRED` or `NOT_REQUIRED`. If enabled, all the direct connections are rejected.
+
+* `data_api_access` - (Optional) Configures ExecuteSql API's access to the instance. connections, can be `ALLOW_DATA_API` or `DISALLOW_DATA_API` (default). `ALLOW_DATA_API` allows using ExecuteSql API to connect to the instance. For private IP instances, this allows authorized users to access the instance from the public internet using ExecuteSql API.
 
 * `deletion_protection_enabled` - (Optional) Enables deletion protection of an instance at the GCP level. Enabling this protection will guard against accidental deletion across all surfaces (API, gcloud, Cloud Console and Terraform) by enabling the [GCP Cloud SQL instance deletion protection](https://cloud.google.com/sql/docs/postgres/deletion-protection). Terraform provider support was introduced in version 4.48.0. Defaults to `false`.
 
@@ -298,13 +484,27 @@ The `settings` block supports:
 
 * `disk_autoresize_limit` - (Optional) The maximum size to which storage capacity can be automatically increased. The default value is 0, which specifies that there is no limit.
 
-* `disk_size` - (Optional) The size of data disk, in GB. Size of a running instance cannot be reduced but can be increased. The minimum value is 10GB. Note that this value will override the resizing from `disk_autoresize` if that feature is enabled. To avoid this, set `lifecycle.ignore_changes` on this field.
+* `disk_size` - (Optional) The size of data disk, in GB. Size of a running instance cannot be reduced but can be increased. The minimum value is 10GB for `PD_SSD`, `PD_HDD` and 20GB for `HYPERDISK_BALANCED`. Note that this value will override the resizing from `disk_autoresize` if that feature is enabled. To avoid this, set `lifecycle.ignore_changes` on this field.
 
-* `disk_type` - (Optional) The type of data disk: PD_SSD or PD_HDD. Defaults to `PD_SSD`.
+* `disk_type` - (Optional) The type of data disk: `PD_SSD`, `PD_HDD`, or `HYPERDISK_BALANCED`. Defaults to `PD_SSD`.
+
+* `data_disk_provisioned_iops` - (Optional) Provisioned number of I/O operations per second for the data disk. This field is only used for `HYPERDISK_BALANCED` disk types.
+
+* `data_disk_provisioned_throughput` - (Optional) Provisioned throughput measured in MiB per second for the data disk. This field is only used for `HYPERDISK_BALANCED` disk types.
+
+* `node_count` - For a read pool instance, the number of nodes in the read pool. For read pools with auto scaling enabled, this field is read only.
 
 * `pricing_plan` - (Optional) Pricing plan for this instance, can only be `PER_USE`.
 
 * `time_zone` - (Optional) The time_zone to be used by the database engine (supported only for SQL Server), in SQL Server timezone format.
+
+* `retain_backups_on_delete` - (Optional) When this parameter is set to true, Cloud SQL retains backups of the instance even after the instance is deleted. The `ON_DEMAND` backup will be retained until customer deletes the backup or the project. The `AUTOMATED` backup will be retained based on the backups retention setting.
+
+The optional `final_backup_config` subblock supports:
+
+* `enabled` - (Optional) True if enabled final backup.
+
+* `retention_days` - (Optional) The number of days we retain the final backup after instance deletion. The valid range is between 1 and 365. For instances managed by BackupDR, the valid range is between 1 day and 99 years.
 
 The optional `settings.advanced_machine_features` subblock supports:
 
@@ -318,12 +518,25 @@ The optional `settings.database_flags` sublist supports:
 
 The optional `settings.active_directory_config` subblock supports:
 
-* `domain` - (Required) The domain name for the active directory (e.g., mydomain.com).
-    Can only be used with SQL Server.
+* `domain` - (Required) The domain name for the active directory (e.g., mydomain.com). Can only be used with SQL Server.
+
+* `mode` - (Optional) The mode of the Active Directory configuration. Can be `MANAGED_ACTIVE_DIRECTORY` or `CUSTOMER_MANAGED_ACTIVE_DIRECTORY`.
+
+* `dns_servers` - (Optional) Domain controller IPv4 addresses used to bootstrap Active Directory.
+
+* `admin_credential_secret_name` - (Optional) The secret manager key storing the administrator credential. (e.g., `projects/{project}/secrets/{secret}`).
+
+* `organizational_unit` - (Optional) The organizational unit distinguished name. This is the full hierarchical path to the organizational unit.
+
+The optional `settings.entraid_config` block supports:
+
+* `application_id` - (Optional) The application ID for the Entra ID configuration. This must be paired with a tenant_id to be valid.
+
+* `tenant_id` - (Optional) The tenant ID for the Entra ID configuration. This must be paired with an application_id to be valid.
 
 The optional `settings.data_cache_config` subblock supports:
 
-* `data_cache_enabled` - (Optional) Whether data cache is enabled for the instance. Defaults to `false`. Can be used with MYSQL and PostgreSQL only.
+* `data_cache_enabled` - (Optional) Whether data cache is enabled for the instance. Defaults to `true` for MYSQL Enterprise Plus and PostgreSQL Enterprise Plus instances only. For SQL Server Enterprise Plus instances it defaults to `false`.
 
 The optional `settings.deny_maintenance_period` subblock supports:
 
@@ -348,13 +561,15 @@ The optional `settings.backup_configuration` subblock supports:
 
 * `enabled` - (Optional) True if backup configuration is enabled.
 
+* `backup_tier` - (Computed) The backup tier that manages the backups for the instance.
+
 * `start_time` - (Optional) `HH:MM` format time indicating when backup
     configuration starts.
-* `point_in_time_recovery_enabled` - (Optional) True if Point-in-time recovery is enabled. Will restart database if enabled after instance creation. Valid only for PostgreSQL and SQL Server instances.
+* `point_in_time_recovery_enabled` - (Optional) True if Point-in-time recovery is enabled. Will restart database if enabled after instance creation. Valid only for PostgreSQL and SQL Server instances. Enabled by default for PostgreSQL Enterprise Plus and SQL Server Enterprise Plus instances.
 
 * `location` - (Optional) The region where the backup will be stored
 
-* `transaction_log_retention_days` - (Optional) The number of days of transaction logs we retain for point in time restore, from 1-7. For PostgreSQL Enterprise Plus instances, the number of days of retained transaction logs can be set from 1 to 35.
+* `transaction_log_retention_days` - (Optional) The number of days of transaction logs we retain for point in time restore, from 1-7. For PostgreSQL Enterprise Plus and SQL Server Enterprise Plus instances, the number of days of retained transaction logs can be set from 1 to 35.
 
 * `backup_retention_settings` - (Optional) Backup retention settings. The configuration is detailed below.
 
@@ -377,9 +592,15 @@ Specifying a network enables private IP.
 At least `ipv4_enabled` must be enabled or a `private_network` must be configured.
 This setting can be updated, but it cannot be removed after it is set.
 
-* `ssl_mode` - (Optional) Specify how SSL connection should be enforced in DB connections.
+* `ssl_mode` - (Optional) Specify how SSL connection should be enforced in DB connections. Supported values are `ALLOW_UNENCRYPTED_AND_ENCRYPTED`, `ENCRYPTED_ONLY`, and `TRUSTED_CLIENT_CERTIFICATE_REQUIRED` (not supported for SQL Server). See [API reference doc](https://cloud.google.com/sql/docs/postgres/admin-api/rest/v1/instances#ipconfiguration) for details.
 
-* `server_ca_mode` - (Optional) Specify how the server certificate's Certificate Authority is hosted. Supported value is `GOOGLE_MANAGED_INTERNAL_CA`.
+* `server_ca_mode` - (Optional) Specify how the server certificate's Certificate Authority is hosted. Supported values are `GOOGLE_MANAGED_INTERNAL_CA`, `GOOGLE_MANAGED_CAS_CA`, and `CUSTOMER_MANAGED_CAS_CA`.
+
+* `server_ca_pool` - (Optional) The resource name of the server CA pool for an instance with `CUSTOMER_MANAGED_CAS_CA` as the `server_ca_mode`.
+
+* `server_certificate_rotation_mode` - (Optional) Controls the automatic server certificate rotation feature. Supported values are `NO_AUTOMATIC_ROTATION`and `AUTOMATIC_ROTATION_DURING_MAINTENANCE`. `AUTOMATIC_ROTATION_DURING_MAINTENANCE` can only be set if `server_ca_mode` is either `GOOGLE_MANAGED_CAS_CA` or `CUSTOMER_MANAGED_CAS_CA`. See [API reference doc](https://cloud.google.com/sql/docs/postgres/admin-api/rest/v1/instances#ipconfiguration) for details.
+
+* `custom_subject_alternative_names` - (Optional) The custom subject alternative names for an instance with `CUSTOMER_MANAGED_CAS_CA` as the `server_ca_mode`.
 
 * `allocated_ip_range` - (Optional) The name of the allocated ip range for the private ip CloudSQL instance. For example: "google-managed-services-default". If set, the instance ip will be created in the allocated range. The range name must comply with [RFC 1035](https://datatracker.ietf.org/doc/html/rfc1035). Specifically, the name must be 1-63 characters long and match the regular expression [a-z]([-a-z0-9]*[a-z0-9])?.
 
@@ -400,7 +621,43 @@ The optional `settings.ip_configuration.psc_config` sublist supports:
 
 * `psc_enabled` - (Optional) Whether PSC connectivity is enabled for this instance.
 
+* `psc_auto_dns_enabled` - (Optional) Whether PSC auto DNS is enabled for this instance.
+
+* `psc_write_endpoint_dns_enabled` - (Optional) Whether PSC write endpoint DNS is enabled for this instance. This is only supported for Enterprise Plus edition instances.
+
+* `settings.ip_configuration.psc_config.psc_auto_connection_policy_enabled` - (Optional) Whether a service connection policy is created for the auto connections configured for the instance.
+
 * `allowed_consumer_projects` - (Optional) List of consumer projects that are allow-listed for PSC connections to this instance. This instance can be connected to with PSC from any network in these projects. Each consumer project in this list may be represented by a project number (numeric) or by a project id (alphanumeric).
+
+* The optional `psc_config.psc_auto_connections` subblock - (Optional) A comma-separated list of networks or a comma-separated list of network-project pairs. Each project in this list is represented by a project number (numeric) or by a project ID (alphanumeric). This allows Private Service Connect connections to be created automatically for the specified networks.
+
+* `consumer_network` - "The consumer network of this consumer endpoint. This must be a resource path that includes both the host project and the network name. For example, `projects/project1/global/networks/network1`. The consumer host project of this network might be different from the consumer service project."
+
+* `network_attachment_uri` - (Optional) Network Attachment URI in the format `projects/project1/regions/region1/networkAttachments/networkAttachment1` to enable outbound connectivity on PSC instance.
+
+* `consumer_service_project_id` - (Optional) The project ID of consumer service project of this consumer endpoint.
+
+The optional `settings.read_pool_auto_scale_config` subblock supports:
+
+* `enabled` - True if Read Pool Auto Scale is enabled.
+
+* `max_node_count` - Maximum number of nodes in the read pool. If set to lower than current node count, node count will be updated.
+
+* `min_node_count` - Minimum number of nodes in the read pool. If set to higher than current node count, node count will be updated.
+
+
+
+* `disable_scale_in` - True if auto scale in is disabled.
+
+* `scale_in_cooldown_seconds` - The cooldown period for scale in operations.
+
+* `scale_out_cooldown_seconds` - The cooldown period for scale out operations.
+
+* `target_metrics` - Target metrics for Read Pool Auto Scale. Must specify `target_metrics.metric` and `target_metrics.target_value` in subblock.
+
+* `metric` - Metric name for Read Pool Auto Scale.
+
+* `target_value` - Target value for Read Pool Auto Scale.
 
 The optional `settings.location_preference` subblock supports:
 
@@ -426,6 +683,8 @@ The optional `settings.insights_config` subblock for instances declares Query In
 
 * `query_insights_enabled` - True if Query Insights feature is enabled.
 
+* `enhanced_query_insights_enabled` - True if Enhanced Query Insights feature is enabled.
+
 * `query_string_length` - Maximum query length stored in bytes. Between 256 and 4500. Default to 1024. Higher query lengths are more useful for analytical queries, but they also require more memory. Changing the query length requires you to restart the instance. You can still add tags to queries that exceed the length limit.
 
 * `record_application_tags` - True if Query Insights will record application tags from query when enabled.
@@ -448,8 +707,31 @@ The optional `settings.password_validation_policy` subblock for instances declar
 
 * `enable_password_policy` - Enables or disable the password validation policy.
 
+The optional `settings.performance_capture_config` (Beta) subblock for instances declares Performance Capture configuration. It contains:
+
+* `enabled` - (Beta) True if the Performance Capture feature is enabled.
+
+* `probing_interval_seconds` - (Beta) The time interval in seconds between any two probes.
+
+* `probe_threshold` - (Beta) The minimum number of consecutive readings above threshold that triggers instance state capture.
+
+* `running_threads_threshold` - (Beta) The minimum number of server threads running to trigger the capture on primary.
+
+* `seconds_behind_source_threshold` - (Beta) The minimum number of seconds replica must be lagging behind primary to trigger capture on replica.
+
+* `transaction_duration_threshold` - (Beta) The amount of time in seconds that a transaction needs to have been open before the watcher starts recording it.
+
 The optional `replica_configuration` block must have `master_instance_name` set
-to work, cannot be updated, and supports:
+to work, cannot be updated and supports:
+
+~> **Note:** `replica_configuration` field is not meant to be used if the master
+instance is a source representation instance. The configuration provided by this
+field can be set on the source representation instance directly. If this field
+is present when the master instance is a source representation instance, `dump_file_path` must be provided.
+
+* `cascadable_replica` - (Optional) Specifies if the replica is a cascadable replica. If true, instance must be in different region from primary.
+
+  ~> **NOTE:** Only supported for SQL Server database.
 
 * `ca_certificate` - (Optional) PEM representation of the trusted CA's x509
     certificate.
@@ -464,7 +746,8 @@ to work, cannot be updated, and supports:
     between connect retries. MySQL's default is 60 seconds.
 
 * `dump_file_path` - (Optional) Path to a SQL file in GCS from which replica
-    instances are created. Format is `gs://bucket/filename`.
+    instances are created. Format is `gs://bucket/filename`. Note, if the master
+    instance is a source representation instance this field must be present.
 
 * `failover_target` - (Optional) Specifies if the replica is the failover target.
     If the field is set to true the replica will be designated as a failover replica.
@@ -484,9 +767,34 @@ to work, cannot be updated, and supports:
 * `verify_server_certificate` - (Optional) True if the master's common name
     value is checked during the SSL handshake.
 
+The optional `point_in_time_restore_context` block supports:
+
+* `datasource` - The Google Cloud Backup and Disaster Recovery Datasource URI.
+
+* `point_in_time` -  The timestamp of the point in time that should be restored.
+
+    A timestamp in RFC3339 UTC "Zulu" format, with nanosecond resolution and up to nine fractional digits. Examples: "2014-10-02T15:01:23Z" and "2014-10-02T15:01:23.045123456Z".
+
+* `target_instance` - The name of the target instance.
+
+* `region` - The region of the target instance where the datasource will be restored. For example: "us-central1".
+
+* `private_network` - (Optional) The resource link for the VPC network from which the Cloud SQL instance is accessible for private IP. For example, "/projects/myProject/global/networks/default".
+
+* `preferred_zone` - (Optional) Point-in-time recovery of an instance to the specified zone. If no zone is specified, then clone to the same primary zone as the source instance.
+
+* `allocated_ip_range` -  (Optional) The name of the allocated ip range for the private ip CloudSQL instance. For example: "google-managed-services-default". If set, the cloned instance ip will be created in the allocated range. The range name must comply with [RFC 1035](https://tools.ietf.org/html/rfc1035). Specifically, the name must be 1-63 characters long and match the regular expression [a-z]([-a-z0-9]*[a-z0-9])?.
+
+* `source_instance_deletion_time` -  (Optional) The timestamp of when the source instance was deleted for a clone from a deleted instance.
+
+    A timestamp in RFC3339 UTC "Zulu" format, with nanosecond resolution and up to nine fractional digits. Examples: "2014-10-02T15:01:23Z" and "2014-10-02T15:01:23.045123456Z".
+
+* `database_names` - (Optional) (SQL Server only, use with `point_in_time`) Clone only the specified databases from the source instance. Clone all databases if empty.
+
 The optional `clone` block supports:
 
 * `source_instance_name` - (Required) Name of the source instance which will be cloned.
+* `source_project` - (Optional) Id of source project where source instances exits, required for cross project clone scenario.
 
 * `point_in_time` -  (Optional) The timestamp of the point in time that should be restored.
 
@@ -497,6 +805,10 @@ The optional `clone` block supports:
 * `database_names` - (Optional) (SQL Server only, use with `point_in_time`) Clone only the specified databases from the source instance. Clone all databases if empty.
 
 * `allocated_ip_range` -  (Optional) The name of the allocated ip range for the private ip CloudSQL instance. For example: "google-managed-services-default". If set, the cloned instance ip will be created in the allocated range. The range name must comply with [RFC 1035](https://tools.ietf.org/html/rfc1035). Specifically, the name must be 1-63 characters long and match the regular expression [a-z]([-a-z0-9]*[a-z0-9])?.
+
+* `source_instance_deletion_time` -  (Optional) The timestamp of when the source instance was deleted for a clone from a deleted instance.
+
+    A timestamp in RFC3339 UTC "Zulu" format, with nanosecond resolution and up to nine fractional digits. Examples: "2014-10-02T15:01:23Z" and "2014-10-02T15:01:23.045123456Z".
 
 The optional `restore_backup_context` block supports:
 **NOTE:** Restoring from a backup is an imperative action and not recommended via Terraform. Adding or modifying this
@@ -509,6 +821,24 @@ block during resource creation/update will trigger the restore action after the 
 
 * `project` - (Optional) The full project ID of the source instance.`
 
+The optional, computed `replication_cluster` block represents a primary instance and disaster recovery replica pair. Applicable to MySQL and PostgreSQL. This field can be set if the primary has psa_write_endpoint set or both the primary and replica are created. This block supports:
+
+* `psa_write_endpoint`: Read-only field which if set, indicates this instance has a private service access (PSA) DNS endpoint that is pointing to the primary instance of the cluster. If this instance is the primary, then the DNS endpoint points to this instance. After a switchover or replica failover operation, this DNS endpoint points to the promoted instance. This is a read-only field, returned to the user as information. This field can exist even if a standalone instance doesn't have a DR replica yet or the DR replica is deleted.
+
+* `failover_dr_replica_name`: (Optional) If the instance is a primary instance, then this field identifies the disaster recovery (DR) replica. The standard format of this field is "your-project:your-instance". You can also set this field to "your-instance", but cloud SQL backend will convert it to the aforementioned standard format.
+
+* `dr_replica`: Read-only field that indicates whether the replica is a DR replica.
+
+The optional `settings.connection_pool_config` subblock supports:
+
+* `connection_pooling_enabled`: (Optional) True if the manager connection pooling configuration is enabled.
+
+The optional `settings.connection_pool_config.flags` sublist supports:
+
+* `name` - (Required) Name of the flag.
+
+* `value` - (Required) Value of the flag.
+
 ## Attributes Reference
 
 In addition to the arguments listed above, the following computed attributes are
@@ -519,7 +849,17 @@ exported:
 * `connection_name` - The connection name of the instance to be used in
 connection strings. For example, when connecting with [Cloud SQL Proxy](https://cloud.google.com/sql/docs/mysql/connect-admin-proxy).
 
-* `dsn_name` - The DNS name of the instance. See [Connect to an instance using Private Service Connect](https://cloud.google.com/sql/docs/mysql/configure-private-service-connect#view-summary-information-cloud-sql-instances-psc-enabled) for more details.
+* `dns_name` - The DNS name of the instance. See [Connect to an instance using Private Service Connect](https://cloud.google.com/sql/docs/mysql/configure-private-service-connect#view-summary-information-cloud-sql-instances-psc-enabled) for more details.
+
+* `dns_names` - The list of DNS names used by this instance. Different connection types for an instance may have different DNS names. DNS names can apply to an individual instance or a cluster of instances. 
+
+* `dns_names.0.name` - The DNS name.
+
+* `dns_names.0.connection_type` - The connection type of the DNS name. Can be either `PUBLIC`, `PRIVATE_SERVICES_ACCESS`, or `PRIVATE_SERVICE_CONNECT`.
+
+* `dns_names.0.dns_scope` - The scope that the DNS name applies to.
+
+  * An `INSTANCE` DNS name applies to an individual Cloud SQL instance.
 
 * `service_account_email_address` - The service account email address assigned to the
 instance.
@@ -555,12 +895,28 @@ performing filtering in a Terraform config.
 
 * `psc_service_attachment_link` - the URI that points to the service attachment of the instance.
 
-* `instance_type` - The type of the instance. The supported values are `SQL_INSTANCE_TYPE_UNSPECIFIED`, `CLOUD_SQL_INSTANCE`, `ON_PREMISES_INSTANCE` and `READ_REPLICA_INSTANCE`.
+* `instance_type` - The type of the instance. See [API reference for SqlInstanceType](https://cloud.google.com/sql/docs/mysql/admin-api/rest/v1/instances#SqlInstanceType) for supported values.
 
 ~> **NOTE:** Users can upgrade a read replica instance to a stand-alone Cloud SQL instance with the help of `instance_type`. To promote, users have to set the `instance_type` property as `CLOUD_SQL_INSTANCE` and remove/unset `master_instance_name` and `replica_configuration` from instance configuration. This operation might cause your instance to restart.
 
+* `settings.ip_configuration.psc_config.psc_auto_connections.consumer_network_status` - (Output) The connection policy status of the consumer network.
+
+* `settings.ip_configuration.psc_config.psc_auto_connections.ip_address` - (Output) The IP address of the consumer endpoint.
+
+* `settings.ip_configuration.psc_config.psc_auto_connections.status` - (Output) The connection status of the consumer endpoint.
+
+* `settings.ip_configuration.psc_config.psc_auto_connections.service_connection_policy` - (Output) The service connection policy created for the auto connection.
+
+* `settings.ip_configuration.psc_config.psc_auto_connections.service_connection_policy_creation_result` - (Output) The result of the service connection policy creation.
+
 * `settings.version` - Used to make sure changes to the `settings` block are
     atomic.
+
+* `settings.0.effective_availability_type` - (Computed) The availability type of
+  the Cloud SQL instance, high availability (REGIONAL) or single zone
+  (ZONAL). This field always contains the value that is reported by the API (for
+  read pools, `settings.0.effective_availability_type` may differ from
+  `settings.0.availability_type`).
 
 * `server_ca_cert.0.cert` - The CA Certificate used to connect to the SQL Instance via SSL.
 
@@ -571,6 +927,42 @@ performing filtering in a Terraform config.
 * `server_ca_cert.0.expiration_time` - Expiration time of the CA Cert.
 
 * `server_ca_cert.0.sha1_fingerprint` - SHA Fingerprint of the CA Cert.
+
+## Switchover
+Users can perform a switchover on a replica by following the steps below.
+
+  ~>**WARNING:** Failure to follow these steps can lead to data loss (You will be warned during plan stage). To prevent data loss during a switchover, please verify your plan with the checklist below.
+
+For a more in-depth walkthrough with example code, see the [Switchover Guide](../guides/sql_instance_switchover.html.markdown)
+
+### Steps to Invoke Switchover
+
+MySQL/PostgreSQL: Create a cross-region, Enterprise Plus edition primary and replica pair, then set the value of primary's `replication_cluster.failover_dr_replica_name` as the replica.
+
+SQL Server: Create a `cascadable` replica in a different region from the primary (`cascadable_replica` is set to true in `replica_configuration`)
+
+#### Invoking switchover in the replica resource:
+1. Change instance_type from `READ_REPLICA_INSTANCE` to `CLOUD_SQL_INSTANCE`
+2. Remove `master_instance_name`
+3. (SQL Server) Remove `replica_configuration`
+4. Add current primary's name to the replica's `replica_names` list
+5. (MySQL/PostgreSQL) Add current primary's name to the replica's `replication_cluster.failover_dr_replica_name`.
+6. (MySQL/PostgreSQL) Adjust `backup_configuration`. See [Switchover Guide](../guides/sql_instance_switchover.html.markdown) for details.
+
+#### Updating the primary resource:
+1. Change `instance_type` from `CLOUD_SQL_INSTANCE` to `READ_REPLICA_INSTANCE`
+2. Set `master_instance_name` to the original replica (which will be primary after switchover)
+3. (SQL Server) Set `replica_configuration` and set `cascadable_replica` to `true`
+4. Remove original replica from `replica_names`
+   * **NOTE**: Do **not** delete the replica_names field, even if it has no replicas remaining. Set replica_names = [ ] to indicate it having no replicas.
+5. (MySQL/PostgreSQL) Set `replication_cluster.failover_dr_replica_name` as the empty string.
+6. (MySQL/PostgreSQL) Adjust `backup_configuration`. See [Switchover Guide](../guides/sql_instance_switchover.html.markdown) for details.
+#### Plan and verify that:
+- `terraform plan` outputs **"0 to add, 0 to destroy"**
+- `terraform plan` does not say **"must be replaced"** for any resource
+- Every resource **"will be updated in-place"**
+- Only the 2 instances involved in switchover have planned changes
+- (Recommended) Use `deletion_protection` on instances as a safety measure
 
 ## Timeouts
 

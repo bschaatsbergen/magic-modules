@@ -1,18 +1,35 @@
 package apphub_test
 
 import (
+	"regexp"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 
 	"github.com/hashicorp/terraform-provider-google/google/acctest"
+	"github.com/hashicorp/terraform-provider-google/google/envvar"
+	_ "github.com/hashicorp/terraform-provider-google/google/services/apphub"
 )
 
 func TestAccApphubApplication_applicationUpdateFull(t *testing.T) {
 	t.Parallel()
 
+	randomSuffix := acctest.RandString(t, 10)
+
 	context := map[string]interface{}{
-		"random_suffix": acctest.RandString(t, 10),
+		"application_id":      "tf-test-example-application" + randomSuffix,
+		"business_email":      "alice@google.com" + randomSuffix,
+		"business_name":       "Alice" + randomSuffix,
+		"desc":                "Application for testing" + randomSuffix,
+		"developer_email":     "bob@google.com" + randomSuffix,
+		"developer_name":      "Bob" + randomSuffix,
+		"developer_2_email":   "derek@google.com" + randomSuffix,
+		"developer_2_name":    "Derek" + randomSuffix,
+		"display_name":        "Application Full" + randomSuffix,
+		"display_name_update": "Application Full New" + randomSuffix,
+		"operator_email":      "charlie@google.com" + randomSuffix,
+		"operator_name":       "Charlie" + randomSuffix,
+		"random_suffix":       randomSuffix,
 	}
 
 	acctest.VcrTest(t, resource.TestCase{
@@ -21,7 +38,7 @@ func TestAccApphubApplication_applicationUpdateFull(t *testing.T) {
 		CheckDestroy:             testAccCheckApphubApplicationDestroyProducer(t),
 		Steps: []resource.TestStep{
 			{
-				Config: testAccApphubApplication_applicationFullExample(context),
+				Config: testAccApphubApplication_apphubApplicationFullExample(context),
 			},
 			{
 				ResourceName:            "google_apphub_application.example2",
@@ -74,8 +91,8 @@ func testAccApphubApplication_applicationUpdateDisplayName(context map[string]in
 
 resource "google_apphub_application" "example2" {
   location = "us-east1"
-  application_id = "tf-test-example-application%{random_suffix}"
-  display_name = "Application Full New%{random_suffix}"
+  application_id = "%{application_id}"
+  display_name = "%{display_name_update}"
   scope {
     type = "REGIONAL"
   }
@@ -87,16 +104,16 @@ resource "google_apphub_application" "example2" {
       type = "MISSION_CRITICAL"
     }
     business_owners {
-      display_name =  "Alice%{random_suffix}"
-      email        =  "alice@google.com%{random_suffix}"
+      display_name =  "%{business_name}"
+      email        =  "%{business_email}"
     }
     developer_owners {
-      display_name =  "Bob%{random_suffix}"
-      email        =  "bob@google.com%{random_suffix}"
+      display_name =  "%{developer_name}"
+      email        =  "%{developer_email}"
     }
     operator_owners {
-      display_name =  "Charlie%{random_suffix}"
-      email        =  "charlie@google.com%{random_suffix}"
+      display_name =  "%{operator_name}"
+      email        =  "%{operator_email}"
     }
   }
 }
@@ -108,8 +125,8 @@ func testAccApphubApplication_applicationUpdateEnvironment(context map[string]in
 
 resource "google_apphub_application" "example2" {
   location = "us-east1"
-  application_id = "tf-test-example-application%{random_suffix}"
-  display_name = "Application Full New%{random_suffix}"
+  application_id = "%{application_id}"
+  display_name = "%{display_name_update}"
   scope {
     type = "REGIONAL"
   }
@@ -121,16 +138,16 @@ resource "google_apphub_application" "example2" {
       type = "MISSION_CRITICAL"
 		}
 		business_owners {
-		  display_name =  "Alice%{random_suffix}"
-		  email        =  "alice@google.com%{random_suffix}"
+		  display_name =  "%{business_name}"
+		  email        =  "%{business_email}"
 		}
 		developer_owners {
-		  display_name =  "Bob%{random_suffix}"
-		  email        =  "bob@google.com%{random_suffix}"
+		  display_name =  "%{developer_name}"
+		  email        =  "%{developer_email}"
 		}
 		operator_owners {
-		  display_name =  "Charlie%{random_suffix}"
-		  email        =  "charlie@google.com%{random_suffix}"
+		  display_name =  "%{operator_name}"
+		  email        =  "%{operator_email}"
 		}
   }
 }
@@ -142,8 +159,8 @@ func testAccApphubApplication_applicationUpdateCriticality(context map[string]in
 
 resource "google_apphub_application" "example2" {
   location = "us-east1"
-  application_id = "tf-test-example-application%{random_suffix}"
-  display_name = "Application Full New%{random_suffix}"
+  application_id = "%{application_id}"
+  display_name = "%{display_name_update}"
   scope {
     type = "REGIONAL"
   }
@@ -155,16 +172,16 @@ resource "google_apphub_application" "example2" {
       type = "MEDIUM"
 		}
 		business_owners {
-		  display_name =  "Alice%{random_suffix}"
-		  email        =  "alice@google.com%{random_suffix}"
+		  display_name =  "%{business_name}"
+		  email        =  "%{business_email}"
 		}
 		developer_owners {
-		  display_name =  "Bob%{random_suffix}"
-		  email        =  "bob@google.com%{random_suffix}"
+		  display_name =  "%{developer_name}"
+		  email        =  "%{developer_email}"
 		}
 		operator_owners {
-		  display_name =  "Charlie%{random_suffix}"
-		  email        =  "charlie@google.com%{random_suffix}"
+		  display_name =  "%{operator_name}"
+		  email        =  "%{operator_email}"
 		}
   }
 }
@@ -176,8 +193,8 @@ func testAccApphubApplication_applicationUpdateOwners(context map[string]interfa
 
 resource "google_apphub_application" "example2" {
   location = "us-east1"
-  application_id = "tf-test-example-application%{random_suffix}"
-  display_name = "Application Full New%{random_suffix}"
+  application_id = "%{application_id}"
+  display_name = "%{display_name_update}"
   scope {
     type = "REGIONAL"
   }
@@ -189,21 +206,73 @@ resource "google_apphub_application" "example2" {
       type = "MEDIUM"
 		}
 		business_owners {
-		  display_name =  "Alice%{random_suffix}"
-		  email        =  "alice@google.com%{random_suffix}"
+		  display_name =  "%{business_name}"
+		  email        =  "%{business_email}"
 		}
 		developer_owners {
-		  display_name =  "Bob%{random_suffix}"
-		  email        =  "bob@google.com%{random_suffix}"
+		  display_name =  "%{developer_name}"
+		  email        =  "%{developer_email}"
 		}
 		developer_owners {
-			display_name =  "Derek%{random_suffix}"
-			email        =  "derek@google.com%{random_suffix}"
+		  display_name =  "%{developer_2_name}"
+		  email        =  "%{developer_2_email}"
 		}
 		operator_owners {
-		  display_name =  "Charlie%{random_suffix}"
-		  email        =  "charlie@google.com%{random_suffix}"
+		  display_name =  "%{operator_name}"
+		  email        =  "%{operator_email}"
 		}
+  }
+}
+`, context)
+}
+
+func TestAccApphubApplication_invalidConfigFails(t *testing.T) {
+	t.Parallel()
+
+	context := map[string]interface{}{
+		"project":       envvar.GetTestProjectFromEnv(),
+		"location":      "us-east1",
+		"random_suffix": acctest.RandString(t, 10),
+	}
+
+	acctest.VcrTest(t, resource.TestCase{
+		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
+		CheckDestroy:             testAccCheckApphubApplicationDestroyProducer(t),
+		Steps: []resource.TestStep{
+			{
+				Config:      testAccApphubApplication_applicationInvalidConfig1(context),
+				ExpectError: regexp.MustCompile("Error validating location global with REGIONAL scope type"),
+			},
+			{
+				Config:      testAccApphubApplication_applicationInvalidConfig2(context),
+				ExpectError: regexp.MustCompile("Error validating location us-east1 with GLOBAL scope type"),
+			},
+		},
+	})
+}
+
+func testAccApphubApplication_applicationInvalidConfig1(context map[string]interface{}) string {
+	return acctest.Nprintf(`
+
+resource "google_apphub_application" "invalid_example" {
+  location = "global"
+  application_id = "tf-test-invalid-example-application%{random_suffix}"
+  scope {
+    type = "REGIONAL"
+  }
+}
+`, context)
+}
+
+func testAccApphubApplication_applicationInvalidConfig2(context map[string]interface{}) string {
+	return acctest.Nprintf(`
+
+resource "google_apphub_application" "invalid_example" {
+  location = "us-east1"
+  application_id = "tf-test-invalid-example-application%{random_suffix}"
+  scope {
+    type = "GLOBAL"
   }
 }
 `, context)

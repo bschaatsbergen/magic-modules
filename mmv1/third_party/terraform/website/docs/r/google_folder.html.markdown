@@ -7,18 +7,20 @@ description: |-
 # google_folder
 
 Allows management of a Google Cloud Platform folder. For more information see 
-[the official documentation](https://cloud.google.com/resource-manager/docs/creating-managing-folders)
+[the official documentation](https://docs.cloud.google.com/resource-manager/docs/creating-managing-folders)
 and 
-[API](https://cloud.google.com/resource-manager/reference/rest/v2/folders).
+[API](https://docs.cloud.google.com/resource-manager/reference/rest/v2/folders).
 
 A folder can contain projects, other folders, or a combination of both. You can use folders to group projects under an organization in a hierarchy. For example, your organization might contain multiple departments, each with its own set of Cloud Platform resources. Folders allows you to group these resources on a per-department basis. Folders are used to group resources that share common IAM policies.
 
-Folders created live inside an Organization. See the [Organization documentation](https://cloud.google.com/resource-manager/docs/quickstarts) for more details.
+Folders created live inside an Organization. See the [Organization documentation](https://docs.cloud.google.com/resource-manager/docs/quickstarts) for more details.
 
 The service account used to run Terraform when creating a `google_folder`
 resource must have `roles/resourcemanager.folderCreator`. See the
-[Access Control for Folders Using IAM](https://cloud.google.com/resource-manager/docs/access-control-folders)
+[Access Control for Folders Using IAM](https://docs.cloud.google.com/resource-manager/docs/access-control-folders)
 doc for more information.
+
+~> It may take a while for the attached tag bindings to be deleted after the folder is scheduled to be deleted. 
 
 ## Example Usage
 
@@ -34,6 +36,13 @@ resource "google_folder" "team-abc" {
   display_name = "Team ABC"
   parent       = google_folder.department1.name
 }
+
+# Folder with a tag
+resource "google_folder" "department1" {
+  display_name = "Department 1"
+  parent       = "organizations/1234567"
+  tags = {"1234567/env":"staging"}
+}
 ```
 
 ## Argument Reference
@@ -46,6 +55,17 @@ The following arguments are supported:
 * `parent` - (Required) The resource name of the parent Folder or Organization.
     Must be of the form `folders/{folder_id}` or `organizations/{org_id}`.
 
+* `deletion_protection` -  (Optional) Whether Terraform will be prevented from destroying or recreating the Folder. When the field is set to `true` or unset in Terraform state, a `terraform apply` or `terraform destroy` that would delete the folder will fail. When the field is set to `false`, deleting the folder is allowed. Default value is `true`.
+
+* `tags` - (Optional) A map of resource manager tags. Resource manager tag keys and values have the same definition as resource manager tags. Keys must be in the format tagKeys/{tag_key_id}, and values are in the format tagValues/456. The field is ignored when empty. The field is immutable and causes resource replacement when  mutated. This field is only set at create time and modifying this field after creation will trigger recreation. To apply tags to an existing resource, see the `google_tags_tag_value` resource.
+
+* `deletion_policy` - (Optional) Whether Terraform will be prevented from destroying the resource. Defaults to "DELETE".
+    When a 'terraform destroy' or 'terraform apply' would delete the resource,
+    the command will fail if this field is set to "PREVENT" in Terraform state.
+    When set to "ABANDON", the command will remove the resource from Terraform
+    management without updating or deleting the resource in the API.
+    When set to "DELETE", deleting the resource is allowed.
+
 ## Attributes Reference
 
 In addition to the arguments listed above, the following computed attributes are
@@ -56,6 +76,8 @@ exported:
 * `lifecycle_state` - The lifecycle state of the folder such as `ACTIVE` or `DELETE_REQUESTED`.
 * `create_time` - Timestamp when the Folder was created. Assigned by the server.
     A timestamp in RFC3339 UTC "Zulu" format, accurate to nanoseconds. Example: "2014-10-02T15:01:23.045123456Z".
+* `configured_capabilities` - Optional capabilities configured for this folder.
+* `management_project` - Management Project associated with this folder (if capability is enabled).
 
 ## Import
 

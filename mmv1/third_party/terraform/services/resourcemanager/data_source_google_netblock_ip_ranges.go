@@ -9,6 +9,7 @@ import (
 	"sort"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-google/google/registry"
 	"go4.org/netipx"
 )
 
@@ -124,22 +125,62 @@ func dataSourceGoogleNetblockIpRangesRead(d *schema.ResourceData, meta interface
 	case "restricted-googleapis":
 		// https://cloud.google.com/vpc/docs/private-access-options#domain-vips
 		CidrBlocks["cidr_blocks_ipv4"] = append(CidrBlocks["cidr_blocks_ipv4"], "199.36.153.4/30")
-		CidrBlocks["cidr_blocks"] = CidrBlocks["cidr_blocks_ipv4"]
+		CidrBlocks["cidr_blocks_ipv6"] = append(CidrBlocks["cidr_blocks_ipv6"], "2600:2d00:0002:1000::/64")
+		CidrBlocks["cidr_blocks"] = append(CidrBlocks["cidr_blocks_ipv4"], CidrBlocks["cidr_blocks_ipv6"]...)
+
 		if err := d.Set("cidr_blocks", CidrBlocks["cidr_blocks"]); err != nil {
 			return fmt.Errorf("Error setting cidr_blocks: %s", err)
 		}
 		if err := d.Set("cidr_blocks_ipv4", CidrBlocks["cidr_blocks_ipv4"]); err != nil {
 			return fmt.Errorf("Error setting cidr_blocks_ipv4: %s", err)
+		}
+		if err := d.Set("cidr_blocks_ipv6", CidrBlocks["cidr_blocks_ipv6"]); err != nil {
+			return fmt.Errorf("Error setting cidr_blocks_ipv6: %s", err)
+		}
+	case "restricted-googleapis-with-directconnectivity":
+		// https://cloud.google.com/vpc/docs/configure-private-google-access#config-options
+		CidrBlocks["cidr_blocks_ipv4"] = append(CidrBlocks["cidr_blocks_ipv4"], "199.36.153.4/30", "34.126.0.0/18")
+		CidrBlocks["cidr_blocks_ipv6"] = append(CidrBlocks["cidr_blocks_ipv6"], "2600:2d00:0002:1000::/64", "2001:4860:8040::/42")
+		CidrBlocks["cidr_blocks"] = append(CidrBlocks["cidr_blocks_ipv4"], CidrBlocks["cidr_blocks_ipv6"]...)
+
+		if err := d.Set("cidr_blocks", CidrBlocks["cidr_blocks"]); err != nil {
+			return fmt.Errorf("Error setting cidr_blocks: %s", err)
+		}
+		if err := d.Set("cidr_blocks_ipv4", CidrBlocks["cidr_blocks_ipv4"]); err != nil {
+			return fmt.Errorf("Error setting cidr_blocks_ipv4: %s", err)
+		}
+		if err := d.Set("cidr_blocks_ipv6", CidrBlocks["cidr_blocks_ipv6"]); err != nil {
+			return fmt.Errorf("Error setting cidr_blocks_ipv6: %s", err)
 		}
 	case "private-googleapis":
 		// https://cloud.google.com/vpc/docs/private-access-options#domain-vips
 		CidrBlocks["cidr_blocks_ipv4"] = append(CidrBlocks["cidr_blocks_ipv4"], "199.36.153.8/30")
-		CidrBlocks["cidr_blocks"] = CidrBlocks["cidr_blocks_ipv4"]
+		CidrBlocks["cidr_blocks_ipv6"] = append(CidrBlocks["cidr_blocks_ipv6"], "2600:2d00:0002:2000::/64")
+		CidrBlocks["cidr_blocks"] = append(CidrBlocks["cidr_blocks_ipv4"], CidrBlocks["cidr_blocks_ipv6"]...)
+
 		if err := d.Set("cidr_blocks", CidrBlocks["cidr_blocks"]); err != nil {
 			return fmt.Errorf("Error setting cidr_blocks: %s", err)
 		}
 		if err := d.Set("cidr_blocks_ipv4", CidrBlocks["cidr_blocks_ipv4"]); err != nil {
 			return fmt.Errorf("Error setting cidr_blocks_ipv4: %s", err)
+		}
+		if err := d.Set("cidr_blocks_ipv6", CidrBlocks["cidr_blocks_ipv6"]); err != nil {
+			return fmt.Errorf("Error setting cidr_blocks_ipv6: %s", err)
+		}
+	case "private-googleapis-with-directconnectivity":
+		// https://cloud.google.com/vpc/docs/private-access-options#domain-vips
+		CidrBlocks["cidr_blocks_ipv4"] = append(CidrBlocks["cidr_blocks_ipv4"], "199.36.153.8/30", "34.126.0.0/18")
+		CidrBlocks["cidr_blocks_ipv6"] = append(CidrBlocks["cidr_blocks_ipv6"], "2600:2d00:0002:2000::/64", "2001:4860:8040::/42")
+		CidrBlocks["cidr_blocks"] = append(CidrBlocks["cidr_blocks_ipv4"], CidrBlocks["cidr_blocks_ipv6"]...)
+
+		if err := d.Set("cidr_blocks", CidrBlocks["cidr_blocks"]); err != nil {
+			return fmt.Errorf("Error setting cidr_blocks: %s", err)
+		}
+		if err := d.Set("cidr_blocks_ipv4", CidrBlocks["cidr_blocks_ipv4"]); err != nil {
+			return fmt.Errorf("Error setting cidr_blocks_ipv4: %s", err)
+		}
+		if err := d.Set("cidr_blocks_ipv6", CidrBlocks["cidr_blocks_ipv6"]); err != nil {
+			return fmt.Errorf("Error setting cidr_blocks_ipv6: %s", err)
 		}
 	case "dns-forwarders":
 		// https://cloud.google.com/dns/zones/#creating-forwarding-zones
@@ -267,4 +308,13 @@ func getCidrsDifference(reference, excluded map[string][]string) (map[string][]s
 	}
 
 	return result, nil
+}
+
+func init() {
+	registry.Schema{
+		Name:        "google_netblock_ip_ranges",
+		ProductName: "resourcemanager",
+		Type:        registry.SchemaTypeDataSource,
+		Schema:      DataSourceGoogleNetblockIpRanges(),
+	}.Register()
 }

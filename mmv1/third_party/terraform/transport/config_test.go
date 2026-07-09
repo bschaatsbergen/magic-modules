@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/terraform-provider-google/google/acctest"
 	"github.com/hashicorp/terraform-provider-google/google/envvar"
 	"github.com/hashicorp/terraform-provider-google/google/provider"
+	compute_tpg "github.com/hashicorp/terraform-provider-google/google/services/compute"
 	transport_tpg "github.com/hashicorp/terraform-provider-google/google/transport"
 	googleoauth "golang.org/x/oauth2/google"
 )
@@ -84,218 +85,6 @@ func TestHandleSDKDefaults_BillingProject(t *testing.T) {
 			}
 			if ok && tc.ValueNotProvided {
 				t.Fatal("expected billing_project to not be set in the provider data")
-			}
-
-			if v != tc.ExpectedValue {
-				t.Fatalf("unexpected value: wanted %v, got, %v", tc.ExpectedValue, v)
-			}
-		})
-	}
-}
-
-func TestHandleSDKDefaults_Region(t *testing.T) {
-	cases := map[string]struct {
-		ConfigValue      string
-		EnvVariables     map[string]string
-		ExpectedValue    string
-		ValueNotProvided bool
-		ExpectError      bool
-	}{
-		"region value set in the provider config is not overridden by ENVs": {
-			ConfigValue: "region-from-config",
-			EnvVariables: map[string]string{
-				"GOOGLE_REGION":           "region-from-env",
-				"GCLOUD_REGION":           "", // GCLOUD_REGION unset
-				"CLOUDSDK_COMPUTE_REGION": "", // CLOUDSDK_COMPUTE_REGION unset
-			},
-			ExpectedValue: "region-from-config",
-		},
-		"region can be set by environment variable, when no value supplied via the config": {
-			EnvVariables: map[string]string{
-				"GOOGLE_REGION":           "region-from-env",
-				"GCLOUD_REGION":           "", // GCLOUD_REGION unset
-				"CLOUDSDK_COMPUTE_REGION": "", // CLOUDSDK_COMPUTE_REGION unset
-			},
-			ExpectedValue: "region-from-env",
-		},
-		"when multiple region environment variables are provided, `GOOGLE_REGION` is used first": {
-			EnvVariables: map[string]string{
-				"GOOGLE_REGION":           "project-from-GOOGLE_REGION",
-				"GCLOUD_REGION":           "project-from-GCLOUD_REGION",
-				"CLOUDSDK_COMPUTE_REGION": "project-from-CLOUDSDK_COMPUTE_REGION",
-			},
-			ExpectedValue: "project-from-GOOGLE_REGION",
-		},
-		"when multiple region environment variables are provided, `GCLOUD_REGION` is used second": {
-			EnvVariables: map[string]string{
-				"GOOGLE_REGION":           "", // GOOGLE_REGION unset
-				"GCLOUD_REGION":           "project-from-GCLOUD_REGION",
-				"CLOUDSDK_COMPUTE_REGION": "project-from-CLOUDSDK_COMPUTE_REGION",
-			},
-			ExpectedValue: "project-from-GCLOUD_REGION",
-		},
-		"when multiple region environment variables are provided, `CLOUDSDK_COMPUTE_REGION` is the last-used ENV": {
-			EnvVariables: map[string]string{
-				"GOOGLE_REGION":           "", // GOOGLE_REGION unset
-				"GCLOUD_REGION":           "", // GCLOUD_REGION unset
-				"CLOUDSDK_COMPUTE_REGION": "project-from-CLOUDSDK_COMPUTE_REGION",
-			},
-			ExpectedValue: "project-from-CLOUDSDK_COMPUTE_REGION",
-		},
-		"when no values are provided via config or environment variables, the field remains unset without error": {
-			EnvVariables: map[string]string{
-				"GOOGLE_REGION":           "", // GOOGLE_REGION unset
-				"GCLOUD_REGION":           "", // GCLOUD_REGION unset
-				"CLOUDSDK_COMPUTE_REGION": "", // CLOUDSDK_COMPUTE_REGION unset
-			},
-			ValueNotProvided: true,
-		},
-	}
-
-	for tn, tc := range cases {
-		t.Run(tn, func(t *testing.T) {
-
-			// Arrange
-			// Create empty schema.ResourceData using the SDK Provider schema
-			emptyConfigMap := map[string]interface{}{}
-			d := schema.TestResourceDataRaw(t, provider.Provider().Schema, emptyConfigMap)
-
-			// Set config value(s)
-			if tc.ConfigValue != "" {
-				d.Set("region", tc.ConfigValue)
-			}
-
-			// Set ENVs
-			if len(tc.EnvVariables) > 0 {
-				for k, v := range tc.EnvVariables {
-					t.Setenv(k, v)
-				}
-			}
-
-			// Act
-			err := transport_tpg.HandleSDKDefaults(d)
-
-			// Assert
-			if err != nil {
-				if !tc.ExpectError {
-					t.Fatalf("error: %v", err)
-				}
-				return
-			}
-
-			// Assert
-			v, ok := d.GetOk("region")
-			if !ok && !tc.ValueNotProvided {
-				t.Fatal("expected region to be set in the provider data")
-			}
-			if ok && tc.ValueNotProvided {
-				t.Fatal("expected region to not be set in the provider data")
-			}
-
-			if v != tc.ExpectedValue {
-				t.Fatalf("unexpected value: wanted %v, got, %v", tc.ExpectedValue, v)
-			}
-		})
-	}
-}
-
-func TestHandleSDKDefaults_Zone(t *testing.T) {
-	cases := map[string]struct {
-		ConfigValue      string
-		EnvVariables     map[string]string
-		ExpectedValue    string
-		ValueNotProvided bool
-		ExpectError      bool
-	}{
-		"region value set in the provider config is not overridden by ENVs": {
-			ConfigValue: "zone-from-config",
-			EnvVariables: map[string]string{
-				"GOOGLE_ZONE":           "zone-from-env",
-				"GCLOUD_ZONE":           "", // GCLOUD_ZONE unset
-				"CLOUDSDK_COMPUTE_ZONE": "", // CLOUDSDK_COMPUTE_ZONE unset
-			},
-			ExpectedValue: "zone-from-config",
-		},
-		"zone can be set by environment variable, when no value supplied via the config": {
-			EnvVariables: map[string]string{
-				"GOOGLE_ZONE":           "zone-from-env",
-				"GCLOUD_ZONE":           "", // GCLOUD_ZONE unset
-				"CLOUDSDK_COMPUTE_ZONE": "", // CLOUDSDK_COMPUTE_ZONE unset
-			},
-			ExpectedValue: "zone-from-env",
-		},
-		"when multiple zone environment variables are provided, `GOOGLE_ZONE` is used first": {
-			EnvVariables: map[string]string{
-				"GOOGLE_ZONE":           "zone-from-GOOGLE_ZONE",
-				"GCLOUD_ZONE":           "zone-from-GCLOUD_ZONE",
-				"CLOUDSDK_COMPUTE_ZONE": "zone-from-CLOUDSDK_COMPUTE_ZONE",
-			},
-			ExpectedValue: "zone-from-GOOGLE_ZONE",
-		},
-		"when multiple zone environment variables are provided, `GCLOUD_ZONE` is used second": {
-			EnvVariables: map[string]string{
-				"GOOGLE_ZONE":           "", // GOOGLE_ZONE unset
-				"GCLOUD_ZONE":           "zone-from-GCLOUD_ZONE",
-				"CLOUDSDK_COMPUTE_ZONE": "zone-from-CLOUDSDK_COMPUTE_ZONE",
-			},
-			ExpectedValue: "zone-from-GCLOUD_ZONE",
-		},
-		"when multiple zone environment variables are provided, `CLOUDSDK_COMPUTE_ZONE` is the last-used ENV": {
-			EnvVariables: map[string]string{
-				"GOOGLE_ZONE":           "", // GOOGLE_ZONE unset
-				"GCLOUD_ZONE":           "", // GCLOUD_ZONE unset
-				"CLOUDSDK_COMPUTE_ZONE": "zone-from-CLOUDSDK_COMPUTE_ZONE",
-			},
-			ExpectedValue: "zone-from-CLOUDSDK_COMPUTE_ZONE",
-		},
-		"when no values are provided via config or environment variables, the field remains unset without error": {
-			EnvVariables: map[string]string{
-				"GOOGLE_ZONE":           "", // GOOGLE_ZONE unset
-				"GCLOUD_ZONE":           "", // GCLOUD_ZONE unset
-				"CLOUDSDK_COMPUTE_ZONE": "", // CLOUDSDK_COMPUTE_ZONE unset
-			},
-			ValueNotProvided: true,
-		},
-	}
-
-	for tn, tc := range cases {
-		t.Run(tn, func(t *testing.T) {
-
-			// Arrange
-			// Create empty schema.ResourceData using the SDK Provider schema
-			emptyConfigMap := map[string]interface{}{}
-			d := schema.TestResourceDataRaw(t, provider.Provider().Schema, emptyConfigMap)
-
-			// Set config value(s)
-			if tc.ConfigValue != "" {
-				d.Set("zone", tc.ConfigValue)
-			}
-
-			// Set ENVs
-			if len(tc.EnvVariables) > 0 {
-				for k, v := range tc.EnvVariables {
-					t.Setenv(k, v)
-				}
-			}
-
-			// Act
-			err := transport_tpg.HandleSDKDefaults(d)
-
-			// Assert
-			if err != nil {
-				if !tc.ExpectError {
-					t.Fatalf("error: %v", err)
-				}
-				return
-			}
-
-			// Assert
-			v, ok := d.GetOk("zone")
-			if !ok && !tc.ValueNotProvided {
-				t.Fatal("expected zone to be set in the provider data")
-			}
-			if ok && tc.ValueNotProvided {
-				t.Fatal("expected zone to not be set in the provider data")
 			}
 
 			if v != tc.ExpectedValue {
@@ -414,8 +203,6 @@ func TestConfigLoadAndValidate_accountFilePath(t *testing.T) {
 		Region:      "us-central1",
 	}
 
-	transport_tpg.ConfigureBasePaths(config)
-
 	err := config.LoadAndValidate(context.Background())
 	if err != nil {
 		t.Fatalf("error: %v", err)
@@ -433,8 +220,6 @@ func TestConfigLoadAndValidate_accountFileJSON(t *testing.T) {
 		Region:      "us-central1",
 	}
 
-	transport_tpg.ConfigureBasePaths(config)
-
 	err = config.LoadAndValidate(context.Background())
 	if err != nil {
 		t.Fatalf("error: %v", err)
@@ -447,8 +232,6 @@ func TestConfigLoadAndValidate_accountFileJSONInvalid(t *testing.T) {
 		Project:     "my-gce-project",
 		Region:      "us-central1",
 	}
-
-	transport_tpg.ConfigureBasePaths(config)
 
 	if config.LoadAndValidate(context.Background()) == nil {
 		t.Fatalf("expected error, but got nil")
@@ -470,14 +253,12 @@ func TestAccConfigLoadValidate_credentials(t *testing.T) {
 		Region:      "us-central1",
 	}
 
-	transport_tpg.ConfigureBasePaths(config)
-
 	err := config.LoadAndValidate(context.Background())
 	if err != nil {
 		t.Fatalf("error: %v", err)
 	}
 
-	_, err = config.NewComputeClient(config.UserAgent).Zones.Get(proj, "us-central1-a").Do()
+	_, err = compute_tpg.NewClient(config, config.UserAgent).Zones.Get(proj, "us-central1-a").Do()
 	if err != nil {
 		t.Fatalf("expected call with loaded config client to work, got error: %s", err)
 	}
@@ -489,7 +270,7 @@ func TestAccConfigLoadValidate_impersonated(t *testing.T) {
 	}
 	acctest.AccTestPreCheck(t)
 
-	serviceaccount := transport_tpg.MultiEnvSearch([]string{"IMPERSONATE_SERVICE_ACCOUNT_ACCTEST"})
+	serviceaccount := envvar.MultiEnvSearch([]string{"IMPERSONATE_SERVICE_ACCOUNT_ACCTEST"})
 	creds := envvar.GetTestCredsFromEnv()
 	proj := envvar.GetTestProjectFromEnv()
 
@@ -500,14 +281,12 @@ func TestAccConfigLoadValidate_impersonated(t *testing.T) {
 		Region:                    "us-central1",
 	}
 
-	transport_tpg.ConfigureBasePaths(config)
-
 	err := config.LoadAndValidate(context.Background())
 	if err != nil {
 		t.Fatalf("error: %v", err)
 	}
 
-	_, err = config.NewComputeClient(config.UserAgent).Zones.Get(proj, "us-central1-a").Do()
+	_, err = compute_tpg.NewClient(config, config.UserAgent).Zones.Get(proj, "us-central1-a").Do()
 	if err != nil {
 		t.Fatalf("expected API call with loaded config to work, got error: %s", err)
 	}
@@ -521,7 +300,7 @@ func TestAccConfigLoadValidate_accessTokenImpersonated(t *testing.T) {
 
 	creds := envvar.GetTestCredsFromEnv()
 	proj := envvar.GetTestProjectFromEnv()
-	serviceaccount := transport_tpg.MultiEnvSearch([]string{"IMPERSONATE_SERVICE_ACCOUNT_ACCTEST"})
+	serviceaccount := envvar.MultiEnvSearch([]string{"IMPERSONATE_SERVICE_ACCOUNT_ACCTEST"})
 
 	c, err := googleoauth.CredentialsFromJSON(context.Background(), []byte(creds), transport_tpg.DefaultClientScopes...)
 	if err != nil {
@@ -540,14 +319,12 @@ func TestAccConfigLoadValidate_accessTokenImpersonated(t *testing.T) {
 		Region:                    "us-central1",
 	}
 
-	transport_tpg.ConfigureBasePaths(config)
-
 	err = config.LoadAndValidate(context.Background())
 	if err != nil {
 		t.Fatalf("error: %v", err)
 	}
 
-	_, err = config.NewComputeClient(config.UserAgent).Zones.Get(proj, "us-central1-a").Do()
+	_, err = compute_tpg.NewClient(config, config.UserAgent).Zones.Get(proj, "us-central1-a").Do()
 	if err != nil {
 		t.Fatalf("expected API call with loaded config to work, got error: %s", err)
 	}
@@ -578,14 +355,12 @@ func TestAccConfigLoadValidate_accessToken(t *testing.T) {
 		Region:      "us-central1",
 	}
 
-	transport_tpg.ConfigureBasePaths(config)
-
 	err = config.LoadAndValidate(context.Background())
 	if err != nil {
 		t.Fatalf("error: %v", err)
 	}
 
-	_, err = config.NewComputeClient(config.UserAgent).Zones.Get(proj, "us-central1-a").Do()
+	_, err = compute_tpg.NewClient(config, config.UserAgent).Zones.Get(proj, "us-central1-a").Do()
 	if err != nil {
 		t.Fatalf("expected API call with loaded config to work, got error: %s", err)
 	}
@@ -598,8 +373,6 @@ func TestConfigLoadAndValidate_customScopes(t *testing.T) {
 		Region:      "us-central1",
 		Scopes:      []string{"https://www.googleapis.com/auth/compute"},
 	}
-
-	transport_tpg.ConfigureBasePaths(config)
 
 	err := config.LoadAndValidate(context.Background())
 	if err != nil {
@@ -692,6 +465,8 @@ func TestRemoveBasePathVersion(t *testing.T) {
 		{"https://staging-version.googleapis.com/", "https://staging-version.googleapis.com/"},
 		// For URLs with any parts, the last part is always removed- it's assumed to be the version.
 		{"https://runtimeconfig.googleapis.com/runtimeconfig/", "https://runtimeconfig.googleapis.com/"},
+		// The protocol can also be http
+		{"http://www.googleapis.com/compute/version_v1/", "http://www.googleapis.com/compute/"},
 	}
 
 	for _, c := range cases {

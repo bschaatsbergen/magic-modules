@@ -7,15 +7,18 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-google/google/registry"
+	"github.com/hashicorp/terraform-provider-google/google/services/storage"
 	"github.com/hashicorp/terraform-provider-google/google/tpgresource"
 	transport_tpg "github.com/hashicorp/terraform-provider-google/google/transport"
 )
 
 func ResourceContainerRegistry() *schema.Resource {
 	return &schema.Resource{
-		Create: resourceContainerRegistryCreate,
-		Read:   resourceContainerRegistryRead,
-		Delete: resourceContainerRegistryDelete,
+		DeprecationMessage: "Container Registry is deprecated. Effective March 18, 2025, Container Registry is shut down and writing images to Container Registry is unavailable. Resource will be removed in future major release.",
+		Create:             resourceContainerRegistryCreate,
+		Read:               resourceContainerRegistryRead,
+		Delete:             resourceContainerRegistryDelete,
 
 		CustomizeDiff: customdiff.All(
 			tpgresource.DefaultProviderProject,
@@ -110,7 +113,7 @@ func resourceContainerRegistryRead(d *schema.ResourceData, meta interface{}) err
 		name = fmt.Sprintf("artifacts.%s.appspot.com", project)
 	}
 
-	res, err := config.NewStorageClient(userAgent).Buckets.Get(name).Do()
+	res, err := storage.NewClient(config, userAgent).Buckets.Get(name).Do()
 	if err != nil {
 		return transport_tpg.HandleNotFoundError(err, d, fmt.Sprintf("Container Registry Storage Bucket %q", name))
 	}
@@ -128,4 +131,13 @@ func resourceContainerRegistryRead(d *schema.ResourceData, meta interface{}) err
 func resourceContainerRegistryDelete(d *schema.ResourceData, meta interface{}) error {
 	// Don't delete the backing bucket as this is not a supported GCR action
 	return nil
+}
+
+func init() {
+	registry.Schema{
+		Name:        "google_container_registry",
+		ProductName: "containeranalysis",
+		Type:        registry.SchemaTypeResource,
+		Schema:      ResourceContainerRegistry(),
+	}.Register()
 }

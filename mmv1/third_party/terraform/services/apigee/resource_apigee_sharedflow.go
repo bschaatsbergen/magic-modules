@@ -9,20 +9,17 @@ package apigee
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"os"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-google/google/registry"
 	"github.com/hashicorp/terraform-provider-google/google/tpgresource"
 	transport_tpg "github.com/hashicorp/terraform-provider-google/google/transport"
-	"google.golang.org/api/googleapi"
 )
 
 func ResourceApigeeSharedFlow() *schema.Resource {
@@ -37,6 +34,7 @@ func ResourceApigeeSharedFlow() *schema.Resource {
 		},
 
 		CustomizeDiff: customdiff.All(
+			tpgresource.DefaultProviderDeletionPolicy("DELETE"),
 			/*
 				If any of the config_bundle, detect_md5hash or md5hash is changed,
 				then an update is expected, so we tell Terraform core to expect update on meta_data,
@@ -137,6 +135,9 @@ func ResourceApigeeSharedFlow() *schema.Resource {
 					return true
 				},
 			},
+			//UDP schema start
+			"deletion_policy": tpgresource.DeletionPolicySchemaEntry("DELETE"),
+			//UDP schema end
 		},
 		UseJSONNumber: true,
 	}
@@ -170,7 +171,7 @@ func resourceApigeeSharedFlowCreate(d *schema.ResourceData, meta interface{}) er
 		return fmt.Errorf("Error, \"config_bundle\" must be specified")
 	}
 
-	url, err := tpgresource.ReplaceVars(d, config, "{{ApigeeBasePath}}organizations/{{org_id}}/sharedflows?name={{name}}&action=import")
+	url, err := tpgresource.ReplaceVars(d, config, transport_tpg.BaseUrl(Product, config)+"organizations/{{org_id}}/sharedflows?name={{name}}&action=import")
 	if err != nil {
 		return err
 	}
@@ -208,6 +209,11 @@ func resourceApigeeSharedFlowCreate(d *schema.ResourceData, meta interface{}) er
 }
 
 func resourceApigeeSharedFlowUpdate(d *schema.ResourceData, meta interface{}) error {
+
+	if tpgresource.DeletionPolicyPreUpdate(d, ResourceApigeeSharedFlow) {
+		return ResourceApigeeSharedFlow().Read(d, meta)
+	}
+
 	//For how sharedflow api is implemented, just treat an update as create, when the name is same, it will create a new revision
 	return resourceApigeeSharedFlowCreate(d, meta)
 }
@@ -219,7 +225,7 @@ func resourceApigeeSharedFlowRead(d *schema.ResourceData, meta interface{}) erro
 		return err
 	}
 
-	url, err := tpgresource.ReplaceVars(d, config, "{{ApigeeBasePath}}organizations/{{org_id}}/sharedflows/{{name}}")
+	url, err := tpgresource.ReplaceVars(d, config, transport_tpg.BaseUrl(Product, config)+"organizations/{{org_id}}/sharedflows/{{name}}")
 	if err != nil {
 		return err
 	}
@@ -264,6 +270,11 @@ func resourceApigeeSharedFlowRead(d *schema.ResourceData, meta interface{}) erro
 		d.Set("md5hash", "UNKNOWN")
 		d.Set("detect_md5hash", "UNKNOWN")
 	}
+
+	if err := tpgresource.DeletionPolicyReadDefault(d, config, "DELETE"); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -287,6 +298,13 @@ func getApigeeSharedFlowLastModifiedAt(d *schema.ResourceData) string {
 
 func resourceApigeeSharedFlowDelete(d *schema.ResourceData, meta interface{}) error {
 	log.Printf("[DEBUG] resourceApigeeSharedFlowDelete")
+
+	if ok, err := tpgresource.DeletionPolicyPreDelete(d); err != nil {
+		return err
+	} else if ok {
+		return nil
+	}
+
 	config := meta.(*transport_tpg.Config)
 	userAgent, err := tpgresource.GenerateUserAgentString(d, config.UserAgent)
 	if err != nil {
@@ -295,7 +313,7 @@ func resourceApigeeSharedFlowDelete(d *schema.ResourceData, meta interface{}) er
 
 	billingProject := ""
 
-	url, err := tpgresource.ReplaceVars(d, config, "{{ApigeeBasePath}}organizations/{{org_id}}/sharedflows/{{name}}")
+	url, err := tpgresource.ReplaceVars(d, config, transport_tpg.BaseUrl(Product, config)+"organizations/{{org_id}}/sharedflows/{{name}}")
 	if err != nil {
 		return err
 	}
@@ -328,8 +346,8 @@ func resourceApigeeSharedFlowDelete(d *schema.ResourceData, meta interface{}) er
 func resourceApigeeSharedFlowImport(d *schema.ResourceData, meta interface{}) ([]*schema.ResourceData, error) {
 	config := meta.(*transport_tpg.Config)
 	if err := tpgresource.ParseImportId([]string{
-		"organizations/(?P<org_id>[^/]+)/sharedflows/(?P<name>[^/]+)",
-		"(?P<org_id>[^/]+)/(?P<name>[^/]+)",
+		"^organizations/(?P<org_id>[^/]+)/sharedflows/(?P<name>[^/]+)$",
+		"^(?P<org_id>[^/]+)/(?P<name>[^/]+)$",
 	}, d, config); err != nil {
 		return nil, err
 	}
@@ -391,74 +409,6 @@ func expandApigeeSharedFlowName(v interface{}, d tpgresource.TerraformResourceDa
 	return v, nil
 }
 
-// sendRequestRawBodyWithTimeout is derived from sendRequestWithTimeout with direct pass through of request body
-func sendRequestRawBodyWithTimeout(config *transport_tpg.Config, method, project, rawurl, userAgent string, body io.Reader, contentType string, timeout time.Duration, errorRetryPredicates ...transport_tpg.RetryErrorPredicateFunc) (map[string]interface{}, error) {
-	log.Printf("[DEBUG] sendRequestRawBodyWithTimeout start")
-	reqHeaders := make(http.Header)
-	reqHeaders.Set("User-Agent", userAgent)
-	reqHeaders.Set("Content-Type", contentType)
-
-	if config.UserProjectOverride && project != "" {
-		// Pass the project into this fn instead of parsing it from the URL because
-		// both project names and URLs can have colons in them.
-		reqHeaders.Set("X-Goog-User-Project", project)
-	}
-
-	if timeout == 0 {
-		timeout = time.Duration(1) * time.Minute
-	}
-
-	var res *http.Response
-
-	log.Printf("[DEBUG] sendRequestRawBodyWithTimeout sending request")
-
-	err := transport_tpg.Retry(transport_tpg.RetryOptions{
-		RetryFunc: func() error {
-			req, err := http.NewRequest(method, rawurl, body)
-			if err != nil {
-				return err
-			}
-
-			req.Header = reqHeaders
-			res, err = config.Client.Do(req)
-			if err != nil {
-				return err
-			}
-
-			if err := googleapi.CheckResponse(res); err != nil {
-				googleapi.CloseBody(res)
-				return err
-			}
-
-			return nil
-		},
-		Timeout:              timeout,
-		ErrorRetryPredicates: errorRetryPredicates,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	if res == nil {
-		return nil, fmt.Errorf("Unable to parse server response. This is most likely a terraform problem, please file a bug at https://github.com/hashicorp/terraform-provider-google/issues.")
-	}
-
-	// The defer call must be made outside of the retryFunc otherwise it's closed too soon.
-	defer googleapi.CloseBody(res)
-
-	// 204 responses will have no body, so we're going to error with "EOF" if we
-	// try to parse it. Instead, we can just return nil.
-	if res.StatusCode == 204 {
-		return nil, nil
-	}
-	result := make(map[string]interface{})
-	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
-		return nil, err
-	}
-	log.Printf("[DEBUG] sendRequestRawBodyWithTimeout returning")
-	return result, nil
-}
-
 func apigeeSharedflowDetectBundleUpdate(_ context.Context, diff *schema.ResourceDiff, v interface{}) bool {
 	tmp, _ := diff.GetChange("detect_md5hash")
 	oldBundleHash := tmp.(string)
@@ -472,4 +422,13 @@ func apigeeSharedflowDetectBundleUpdate(_ context.Context, diff *schema.Resource
 		return true
 	}
 	return diff.HasChange("config_bundle") || diff.HasChange("md5hash")
+}
+
+func init() {
+	registry.Schema{
+		Name:        "google_apigee_sharedflow",
+		ProductName: "apigee",
+		Type:        registry.SchemaTypeResource,
+		Schema:      ResourceApigeeSharedFlow(),
+	}.Register()
 }

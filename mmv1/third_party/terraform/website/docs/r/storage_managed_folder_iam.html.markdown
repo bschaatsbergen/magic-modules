@@ -142,6 +142,7 @@ The following arguments are supported:
   * **projectOwner:projectid**: Owners of the given project. For example, "projectOwner:my-example-project"
   * **projectEditor:projectid**: Editors of the given project. For example, "projectEditor:my-example-project"
   * **projectViewer:projectid**: Viewers of the given project. For example, "projectViewer:my-example-project"
+  * **principalSet://iam.googleapis.com/{poolResourceName}/attribute.{key}/{value}**: An external identity set from a Workload Identity Pool, optionally constrained by an attribute (e.g. GitHub Actions branch via attribute.repository). Example: "principalSet://iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/github-pool/attribute.repository/your-org/your-repo"
 
 * `role` - (Required) The role that should be applied. Only one
     `google_storage_managed_folder_iam_binding` can be used per role. Note that custom roles must be of the format
@@ -199,5 +200,5 @@ IAM policy imports use the identifier of the resource in question, e.g.
 $ terraform import google_storage_managed_folder_iam_policy.editor b/{{bucket}}/managedFolders/{{managed_folder}}
 ```
 
--> **Custom Roles**: If you're importing a IAM resource with a custom role, make sure to use the
+-> **Custom Roles** If you're importing a IAM resource with a custom role, make sure to use the
  full name of the custom role, e.g. `[projects/my-project|organizations/my-org]/roles/my-custom-role`.

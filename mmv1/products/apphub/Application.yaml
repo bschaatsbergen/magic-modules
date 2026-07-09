@@ -11,179 +11,221 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
---- !ruby/object:Api::Resource
+---
+name: Application
+description: Application is a functional grouping of Services and Workloads that helps achieve a desired end-to-end business functionality. Services and Workloads are owned by the Application.
+docs:
 base_url: projects/{{project}}/locations/{{location}}/applications
-create_url: projects/{{project}}/locations/{{location}}/applications?applicationId={{application_id}}
 self_link: projects/{{project}}/locations/{{location}}/applications/{{application_id}}
+create_url: projects/{{project}}/locations/{{location}}/applications?applicationId={{application_id}}
+update_mask: true
+update_verb: PATCH
 id_format: projects/{{project}}/locations/{{location}}/applications/{{application_id}}
 import_format:
   - projects/{{project}}/locations/{{location}}/applications/{{application_id}}
-name: Application
-description: 'Application is a functional grouping of Services and Workloads that helps achieve a desired end-to-end business functionality.
-  Services and Workloads are owned by the Application.'
-update_verb: :PATCH
-update_mask: true
-autogen_async: true
-async: !ruby/object:Api::OpAsync
-  operation: !ruby/object:Api::OpAsync::Operation
-    path: name
-    base_url: "{{op_id}}"
-    wait_ms: 1000
-    timeouts:
-  result: !ruby/object:Api::OpAsync::Result
-    path: response
+timeouts:
+  insert_minutes: 20
+  update_minutes: 20
+  delete_minutes: 20
+custom_diff:
+  - apphubApplicationCustomizeDiff
+sweeper:
+  url_substitutions:
+    - region: us-central1
+    - region: us-east1
+    - region: global
+async:
+  type: OpAsync
+  operation:
+    base_url: '{{op_id}}'
+  actions: [create, delete, update]
+  result:
     resource_inside_response: true
-  status: !ruby/object:Api::OpAsync::Status
-    path: done
-    complete: true
-    allowed:
-      - true
-      - false
-  error: !ruby/object:Api::OpAsync::Error
-    path: error
-    message: message
-examples:
-  - !ruby/object:Provider::Terraform::Examples
-    name: "application_basic"
-    primary_resource_id: "example"
-    config_path: "templates/terraform/examples/apphub_application_basic.tf.erb"
-    vars:
-      application_id: "example-application"
-  - !ruby/object:Provider::Terraform::Examples
-    name: "application_full"
-    primary_resource_id: "example2"
-    config_path: "templates/terraform/examples/apphub_application_full.tf.erb"
-    vars:
-      application_id: "example-application"
-      display_name: "Application Full"
-      description: 'Application for testing'
-      business_name: "Alice"
-      business_email: "alice@google.com"
-      developer_name: "Bob"
-      developer_email: "bob@google.com"
-      operator_name: "Charlie"
-      operator_email: "charlie@google.com"
+autogen_status: QXBwbGljYXRpb24=
+autogen_async: true
+include_in_tgc_next: true
+custom_code:
+  constants: templates/terraform/constants/apphub_application.go.tmpl
+samples:
+  - name: apphub_application_basic
+    primary_resource_id: example
+    steps:
+      - name: apphub_application_basic
+        resource_id_vars:
+          application_id: example-application
+          location: us-east1
+          scope_type: REGIONAL
+        test_vars_overrides:
+          location: '"us-east1"'
+          scope_type: '"REGIONAL"'
+  - name: apphub_application_global_basic
+    primary_resource_id: example
+    steps:
+      - name: apphub_application_global_basic
+        config_path: templates/terraform/samples/services/apphub/apphub_application_basic.tf.tmpl
+        resource_id_vars:
+          application_id: example-application
+          location: global
+          scope_type: GLOBAL
+        test_vars_overrides:
+          location: '"global"'
+          scope_type: '"GLOBAL"'
+  - name: apphub_application_full
+    primary_resource_id: example2
+    steps:
+      - name: apphub_application_full
+        resource_id_vars:
+          application_id: example-application
+          display_name: Application Full
+          desc: Application for testing
+          business_name: Alice
+          business_email: alice@google.com
+          developer_name: Bob
+          developer_email: bob@google.com
+          operator_name: Charlie
+          operator_email: charlie@google.com
+        test_vars_overrides:
+          # for backward compatible
+          display_name: '"Application Full" + randomSuffix'
+          # for backward compatible
+          desc: '"Application for testing" + randomSuffix'
+          # for backward compatible
+          business_name: '"Alice" + randomSuffix'
+          # for backward compatible
+          business_email: '"alice@google.com" + randomSuffix'
+          # for backward compatible
+          developer_name: '"Bob" + randomSuffix'
+          # for backward compatible
+          developer_email: '"bob@google.com" + randomSuffix'
+          # for backward compatible
+          operator_name: '"Charlie" + randomSuffix'
+          # for backward compatible
+          operator_email: '"charlie@google.com" + randomSuffix'
 parameters:
-  - !ruby/object:Api::Type::String
-    name: location
-    description: 'Part of `parent`. See documentation of `projectsId`.'
+  - name: location
+    type: String
+    description: Part of `parent`. See documentation of `projectsId`.
     url_param_only: true
     required: true
     immutable: true
-  - !ruby/object:Api::Type::String
-    name: applicationId
-    description: 'Required. The Application identifier.'
+  - name: applicationId
+    type: String
+    description: Required. The Application identifier.
     url_param_only: true
     required: true
     immutable: true
 properties:
-  - !ruby/object:Api::Type::String
-    name: name
+  - name: name
+    type: String
+    description: |-
+      Identifier. The resource name of an Application. Format:
+      "projects/{host-project-id}/locations/{location}/applications/{application-id}"
     output: true
-    description: "Identifier. The resource name of an Application. Format:\n\"projects/{host-project-id}/locations/{location}/applications/{application-id}\""
-  - !ruby/object:Api::Type::String
-    name: displayName
-    description: 'Optional. User-defined name for the Application.'
-  - !ruby/object:Api::Type::String
-    name: description
-    description: 'Optional. User-defined description of an Application.'
-  - !ruby/object:Api::Type::NestedObject
-    name: attributes
-    description: 'Consumer provided attributes.'
+  - name: displayName
+    type: String
+    description: Optional. User-defined name for the Application.
+  - name: description
+    type: String
+    description: Optional. User-defined description of an Application.
+  - name: attributes
+    type: NestedObject
+    description: Consumer provided attributes.
     properties:
-      - !ruby/object:Api::Type::NestedObject
-        name: criticality
-        description: 'Criticality of the Application, Service, or Workload'
+      - name: criticality
+        type: NestedObject
+        description: Criticality of the Application, Service, or Workload
         properties:
-          - !ruby/object:Api::Type::Enum
-            name: type
-            description: 'Criticality type.'
+          - name: type
+            type: Enum
+            description: Criticality type.
             required: true
-            values:
-              - :MISSION_CRITICAL
-              - :HIGH
-              - :MEDIUM
-              - :LOW
-      - !ruby/object:Api::Type::NestedObject
-        name: environment
-        description: 'Environment of the Application, Service, or Workload'
+            enum_values:
+              - MISSION_CRITICAL
+              - HIGH
+              - MEDIUM
+              - LOW
+      - name: environment
+        type: NestedObject
+        description: Environment of the Application, Service, or Workload
         properties:
-          - !ruby/object:Api::Type::Enum
-            name: type
-            description: 'Environment type.'
+          - name: type
+            type: Enum
+            description: Environment type.
             required: true
-            values:
-              - :PRODUCTION
-              - :STAGING
-              - :TEST
-              - :DEVELOPMENT
-      - !ruby/object:Api::Type::Array
-        name: developerOwners
-        description: 'Optional. Developer team that owns development and coding.'
-        item_type: !ruby/object:Api::Type::NestedObject
+            enum_values:
+              - PRODUCTION
+              - STAGING
+              - TEST
+              - DEVELOPMENT
+      - name: developerOwners
+        type: Array
+        description: Optional. Developer team that owns development and coding.
+        item_type:
+          type: NestedObject
           properties:
-            - !ruby/object:Api::Type::String
-              name: displayName
-              description: 'Optional. Contact''s name.'
-            - !ruby/object:Api::Type::String
-              name: email
+            - name: displayName
+              type: String
+              description: Optional. Contact's name.
+            - name: email
+              type: String
+              description: Required. Email address of the contacts.
               required: true
-              description: 'Required. Email address of the contacts.'
-      - !ruby/object:Api::Type::Array
-        name: operatorOwners
-        description: 'Optional. Operator team that ensures runtime and operations.'
-        item_type: !ruby/object:Api::Type::NestedObject
+      - name: operatorOwners
+        type: Array
+        description: Optional. Operator team that ensures runtime and operations.
+        item_type:
+          type: NestedObject
           properties:
-            - !ruby/object:Api::Type::String
-              name: displayName
-              description: 'Optional. Contact''s name.'
-            - !ruby/object:Api::Type::String
-              name: email
+            - name: displayName
+              type: String
+              description: Optional. Contact's name.
+            - name: email
+              type: String
+              description: Required. Email address of the contacts.
               required: true
-              description: 'Required. Email address of the contacts.'
-      - !ruby/object:Api::Type::Array
-        name: businessOwners
-        description: 'Optional. Business team that ensures user needs are met and value
-          is delivered'
-        item_type: !ruby/object:Api::Type::NestedObject
+      - name: businessOwners
+        type: Array
+        description: Optional. Business team that ensures user needs are met and value is delivered
+        item_type:
+          type: NestedObject
           properties:
-            - !ruby/object:Api::Type::String
-              name: displayName
-              description: 'Optional. Contact''s name.'
-            - !ruby/object:Api::Type::String
-              name: email
+            - name: displayName
+              type: String
+              description: Optional. Contact's name.
+            - name: email
+              type: String
+              description: Required. Email address of the contacts.
               required: true
-              description: 'Required. Email address of the contacts.'
-  - !ruby/object:Api::Type::String
-    name: createTime
-    description: 'Output only. Create time.'
+  - name: createTime
+    type: String
+    description: Output only. Create time.
     output: true
-  - !ruby/object:Api::Type::String
-    name: updateTime
-    description: 'Output only. Update time.'
+  - name: updateTime
+    type: String
+    description: Output only. Update time.
     output: true
-  - !ruby/object:Api::Type::NestedObject
-    name: scope
-    description: 'Scope of an application.'
+  - name: scope
+    type: NestedObject
+    description: Scope of an application.
     required: true
     properties:
-      - !ruby/object:Api::Type::Enum
-        name: type
-        description: "Required. Scope Type. \n Possible values:\nREGIONAL"
+      - name: type
+        type: Enum
+        description: "Required. Scope Type. \n Possible values:\nREGIONAL\nGLOBAL"
         required: true
-        values:
-          - :REGIONAL
-  - !ruby/object:Api::Type::String
-    name: uid
-    description: 'Output only. A universally unique identifier (in UUID4 format) for
-      the `Application`.'
+        enum_values:
+          - REGIONAL
+          - GLOBAL
+  - name: uid
+    type: String
+    description: Output only. A universally unique identifier (in UUID4 format) for the `Application`.
     output: true
-  - !ruby/object:Api::Type::Enum
-    name: state
+  - name: state
+    type: Enum
     description: "Output only. Application state. \n Possible values:\n STATE_UNSPECIFIED\nCREATING\nACTIVE\nDELETING"
     output: true
-    values:
-      - :STATE_UNSPECIFIED
-      - :CREATING
-      - :ACTIVE
-      - :DELETING
+    enum_values:
+      - STATE_UNSPECIFIED
+      - CREATING
+      - ACTIVE
+      - DELETING

@@ -17,30 +17,24 @@ import (
 	"bytes"
 	"fmt"
 	"go/format"
-	"log"
+	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
-
 	"text/template"
 
 	"github.com/GoogleCloudPlatform/magic-modules/mmv1/api"
-	"github.com/GoogleCloudPlatform/magic-modules/mmv1/api/product"
+	"github.com/GoogleCloudPlatform/magic-modules/mmv1/api/metadata"
 	"github.com/GoogleCloudPlatform/magic-modules/mmv1/google"
 	"github.com/golang/glog"
+	"gopkg.in/yaml.v3"
 )
 
 type TemplateData struct {
-	//     include Compile::Core
-
 	OutputFolder string
-	Version      product.Version
+	VersionName  string
+	templateFS   fs.FS
 
-	TerraformResourceDirectory string
-	TerraformProviderModule    string
-
-	// TODO Q2: is this needed?
+	// TODO rewrite: is this needed?
 	//     # Information about the local environment
 	//     # (which formatters are enabled, start-time)
 	//     attr_accessor :env
@@ -49,21 +43,10 @@ type TemplateData struct {
 var GA_VERSION = "ga"
 var BETA_VERSION = "beta"
 var ALPHA_VERSION = "alpha"
+var PRIVATE_VERSION = "private"
 
-func NewTemplateData(outputFolder string, version product.Version) *TemplateData {
-	td := TemplateData{OutputFolder: outputFolder, Version: version}
-
-	if version.Name == GA_VERSION {
-		td.TerraformResourceDirectory = "google"
-		td.TerraformProviderModule = "github.com/hashicorp/terraform-provider-google"
-	} else if version.Name == ALPHA_VERSION {
-		td.TerraformResourceDirectory = "google-private"
-		td.TerraformProviderModule = "internal/terraform-next"
-	} else {
-		td.TerraformResourceDirectory = "google-beta"
-		td.TerraformProviderModule = "github.com/hashicorp/terraform-provider-google-beta"
-	}
-
+func NewTemplateData(outputFolder string, versionName string, templateFS fs.FS) *TemplateData {
+	td := TemplateData{OutputFolder: outputFolder, VersionName: versionName, templateFS: templateFS}
 	return &td
 }
 
@@ -74,7 +57,7 @@ func (td *TemplateData) GenerateResourceFile(filePath string, resource api.Resou
 		"templates/terraform/schema_property.go.tmpl",
 		"templates/terraform/schema_subresource.go.tmpl",
 		"templates/terraform/expand_resource_ref.tmpl",
-		"templates/terraform/custom_flatten/go/bigquery_table_ref.go.tmpl",
+		"templates/terraform/custom_flatten/bigquery_table_ref.go.tmpl",
 		"templates/terraform/flatten_property_method.go.tmpl",
 		"templates/terraform/expand_property_method.go.tmpl",
 		"templates/terraform/update_mask.go.tmpl",
@@ -82,6 +65,43 @@ func (td *TemplateData) GenerateResourceFile(filePath string, resource api.Resou
 		"templates/terraform/unordered_list_customize_diff.go.tmpl",
 	}
 	td.GenerateFile(filePath, templatePath, resource, true, templates...)
+}
+
+func (td *TemplateData) GenerateFWResourceFile(filePath string, resource api.Resource) {
+	templatePath := "templates/terraform/resource_fw.go.tmpl"
+	templates := []string{
+		templatePath,
+		"templates/terraform/schema_property_fw.go.tmpl",
+	}
+	td.GenerateFile(filePath, templatePath, resource, true, templates...)
+}
+
+func (td *TemplateData) GenerateMetadataFile(filePath string, resource api.Resource) {
+	metadata := metadata.FromResource(resource)
+	bytes, err := yaml.Marshal(metadata)
+	if err != nil {
+		glog.Exit("error marshalling yaml %v: %v", filePath)
+	}
+	err = os.WriteFile(filePath, bytes, 0644)
+	if err != nil {
+		glog.Exit(err)
+	}
+}
+
+func (td *TemplateData) GenerateDataSourceFile(filePath string, resource api.Resource) {
+	templatePath := "templates/terraform/datasource.go.tmpl"
+	templates := []string{
+		templatePath,
+	}
+	td.GenerateFile(filePath, templatePath, resource, true, templates...)
+}
+
+func (td *TemplateData) GenerateProductFile(filePath string, product api.Product) {
+	templatePath := "templates/terraform/product.go.tmpl"
+	templates := []string{
+		templatePath,
+	}
+	td.GenerateFile(filePath, templatePath, product, true, templates...)
 }
 
 func (td *TemplateData) GenerateOperationFile(filePath string, resource api.Resource) {
@@ -102,28 +122,77 @@ func (td *TemplateData) GenerateDocumentationFile(filePath string, resource api.
 	td.GenerateFile(filePath, templatePath, resource, false, templates...)
 }
 
+func (td *TemplateData) GenerateListResourceDocumentationFile(filePath string, resource api.Resource) {
+	templatePath := "templates/terraform/list_resource.html.markdown.tmpl"
+	templates := []string{
+		templatePath,
+	}
+	td.GenerateFile(filePath, templatePath, resource, false, templates...)
+}
+
+func (td *TemplateData) GenerateDataSourceDocumentationFile(filePath string, resource api.Resource) {
+	templatePath := "templates/terraform/datasource.html.markdown.tmpl"
+	templates := []string{
+		templatePath,
+		"templates/terraform/property_documentation.html.markdown.tmpl",
+		"templates/terraform/nested_property_documentation.html.markdown.tmpl",
+	}
+	td.GenerateFile(filePath, templatePath, resource, false, templates...)
+}
+
 func (td *TemplateData) GenerateTestFile(filePath string, resource api.Resource) {
-	templatePath := "templates/terraform/examples/base_configs/test_file.go.tmpl"
+	templatePath := "templates/terraform/samples/base_configs/test_file.go.tmpl"
 	templates := []string{
 		"templates/terraform/env_var_context.go.tmpl",
 		templatePath,
 	}
 	tmplInput := TestInput{
-		Res:                 resource,
-		ImportPath:          td.ImportPath(),
-		PROJECT_NAME:        "my-project-name",
-		CREDENTIALS:         "my/credentials/filename.json",
-		REGION:              "us-west1",
-		ORG_ID:              "123456789",
-		ORG_DOMAIN:          "example.com",
-		ORG_TARGET:          "123456789",
-		PROJECT_NUMBER:      "1111111111111",
-		BILLING_ACCT:        "000000-0000000-0000000-000000",
-		MASTER_BILLING_ACCT: "000000-0000000-0000000-000000",
-		SERVICE_ACCT:        "my@service-account.com",
-		CUST_ID:             "A01b123xz",
-		IDENTITY_USER:       "cloud_identity_user",
-		PAP_DESCRIPTION:     "description",
+		Res:                  resource,
+		ImportPath:           resource.ImportPath,
+		PROJECT_NAME:         "my-project-name",
+		CREDENTIALS:          "my/credentials/filename.json",
+		REGION:               "us-west1",
+		ORG_ID:               "123456789",
+		ORG_DOMAIN:           "example.com",
+		ORG_TARGET:           "123456789",
+		PROJECT_NUMBER:       "1111111111111",
+		BILLING_ACCT:         "000000-0000000-0000000-000000",
+		MASTER_BILLING_ACCT:  "000000-0000000-0000000-000000",
+		SERVICE_ACCT:         "my@service-account.com",
+		CUST_ID:              "A01b123xz",
+		IDENTITY_USER:        "cloud_identity_user",
+		PAP_DESCRIPTION:      "description",
+		CHRONICLE_ID:         "00000000-0000-0000-0000-000000000000",
+		VMWAREENGINE_PROJECT: "my-vmwareengine-project",
+	}
+
+	td.GenerateFile(filePath, templatePath, tmplInput, true, templates...)
+}
+
+func (td *TemplateData) GenerateDataSourceTestFile(filePath string, resource api.Resource) {
+	templatePath := "templates/terraform/samples/base_configs/datasource_test_file.go.tmpl"
+	templates := []string{
+		"templates/terraform/env_var_context.go.tmpl",
+		templatePath,
+	}
+	tmplInput := TestInput{
+		Res:                  resource,
+		ImportPath:           resource.ImportPath,
+		PROJECT_NAME:         "my-project-name",
+		CREDENTIALS:          "my/credentials/filename.json",
+		REGION:               "us-west1",
+		ORG_ID:               "123456789",
+		ORG_DOMAIN:           "example.com",
+		ORG_TARGET:           "123456789",
+		PROJECT_NUMBER:       "1111111111111",
+		BILLING_ACCT:         "000000-0000000-0000000-000000",
+		MASTER_BILLING_ACCT:  "000000-0000000-0000000-000000",
+		SERVICE_ACCT:         "my@service-account.com",
+		CUST_ID:              "A01b123xz",
+		IDENTITY_USER:        "cloud_identity_user",
+		PAP_DESCRIPTION:      "description",
+		CHRONICLE_ID:         "00000000-0000-0000-0000-000000000000",
+		VMWAREENGINE_PROJECT: "my-vmwareengine-project",
 	}
 
 	td.GenerateFile(filePath, templatePath, tmplInput, true, templates...)
@@ -154,11 +223,21 @@ func (td *TemplateData) GenerateIamDatasourceDocumentationFile(filePath string, 
 }
 
 func (td *TemplateData) GenerateIamPolicyTestFile(filePath string, resource api.Resource) {
-	templatePath := "templates/terraform/examples/base_configs/iam_test_file.go.tmpl"
+	templatePath := "templates/terraform/samples/base_configs/iam_test_file.go.tmpl"
 	templates := []string{
 		templatePath,
 		"templates/terraform/env_var_context.go.tmpl",
-		"templates/terraform/iam/go/iam_context.go.tmpl",
+		"templates/terraform/iam/iam_test_setup.go.tmpl",
+	}
+	td.GenerateFile(filePath, templatePath, resource, true, templates...)
+}
+
+// GenerateQueryTestFile emits a Terraform query-mode acceptance test for list resources (generate_list_resource).
+func (td *TemplateData) GenerateQueryTestFile(filePath string, resource api.Resource) {
+	templatePath := "templates/terraform/samples/base_configs/query_test_file.go.tmpl"
+	templates := []string{
+		templatePath,
+		"templates/terraform/env_var_context.go.tmpl",
 	}
 	td.GenerateFile(filePath, templatePath, resource, true, templates...)
 }
@@ -171,22 +250,64 @@ func (td *TemplateData) GenerateSweeperFile(filePath string, resource api.Resour
 	td.GenerateFile(filePath, templatePath, resource, false, templates...)
 }
 
+func (td *TemplateData) GenerateTGCResourceFile(templatePath, filePath string, resource api.Resource) {
+	templates := []string{
+		templatePath,
+		"templates/terraform/expand_property_method.go.tmpl",
+		"templates/terraform/expand_resource_ref.tmpl",
+		"templates/terraform/schema_property.go.tmpl",
+		"templates/terraform/schema_subresource.go.tmpl",
+		"templates/terraform/flatten_property_method.go.tmpl",
+		"templates/tgc_next/tfplan2cai/expand_property_method_tgc.go.tmpl",
+		"templates/tgc_next/cai2hcl/flatten_property_method_tgc.go.tmpl",
+		"templates/tgc_next/cai2hcl/full_to_relative_path.go.tmpl",
+	}
+	td.GenerateFile(filePath, templatePath, resource, true, templates...)
+}
+
+func (td *TemplateData) GenerateTGCIamResourceFile(filePath string, resource api.Resource) {
+	templatePath := "templates/tgc/resource_converter_iam.go.tmpl"
+	templates := []string{
+		templatePath,
+	}
+	td.GenerateFile(filePath, templatePath, resource, true, templates...)
+}
+
+func (td *TemplateData) GenerateTGCNextTestFile(filePath string, resource api.Resource) {
+	templatePath := "templates/tgc_next/test/test_file.go.tmpl"
+	templates := []string{
+		templatePath,
+	}
+	td.GenerateFile(filePath, templatePath, resource, true, templates...)
+}
+
 func (td *TemplateData) GenerateFile(filePath, templatePath string, input any, goFormat bool, templates ...string) {
-	// log.Printf("Generating %s", filePath)
-
 	templateFileName := filepath.Base(templatePath)
+	if templatePath == "templates/terraform/examples/base_configs/iam_test_file.go.tmpl" {
+		templatePath = "templates/terraform/samples/base_configs/iam_test_file.go.tmpl"
+	}
 
-	tmpl, err := template.New(templateFileName).Funcs(google.TemplateFunctions).ParseFiles(templates...)
+	funcMap := template.FuncMap{
+		"TemplatePath": func() string { return templatePath },
+	}
+	for k, v := range google.TemplateFunctions(td.templateFS) {
+		funcMap[k] = v
+	}
+
+	tmpl, err := template.New(templateFileName).Funcs(funcMap).ParseFS(td.templateFS, templates...)
 	if err != nil {
-		glog.Exit(err)
+		glog.Exit(fmt.Sprintf("error parsing %s for filepath %s ", templateFileName, filePath), err)
 	}
 
 	contents := bytes.Buffer{}
 	if err = tmpl.ExecuteTemplate(&contents, templateFileName, input); err != nil {
-		glog.Exit(err)
+		glog.Exit(fmt.Sprintf("error executing %s for filepath %s ", templateFileName, filePath), err)
 	}
 
 	sourceByte := contents.Bytes()
+	if len(bytes.TrimSpace(sourceByte)) == 0 {
+		return
+	}
 
 	if goFormat {
 		formattedByte, err := format.Source(sourceByte)
@@ -201,120 +322,24 @@ func (td *TemplateData) GenerateFile(filePath, templatePath string, input any, g
 	if err != nil {
 		glog.Exit(err)
 	}
-
-	if goFormat && !strings.Contains(templatePath, "third_party/terraform") {
-		cmd := exec.Command("goimports", "-w", filePath)
-		if err := cmd.Run(); err != nil {
-			log.Fatal(err)
-		}
-	}
-}
-
-//     # path is the output name of the file
-//     # template is used to determine metadata about the file based on how it is
-//     # generated
-//     def format_output_file(path, template)
-//       return unless path.end_with?('.go') && @env[:goformat_enabled]
-
-//       run_formatter("gofmt -w -s #{path}")
-//       run_formatter("goimports -w #{path}") unless template.include?('third_party/terraform')
-//     end
-
-//     def run_formatter(command)
-//       output = %x(#{command} 2>&1)
-//       Google::LOGGER.error output unless $CHILD_STATUS.to_i.zero?
-//     end
-
-//     def relative_path(target, base)
-//       Pathname.new(target).relative_path_from(Pathname.new(base))
-//     end
-//   end
-
-//   # Responsible for compiling provider-level files, rather than product-specific ones
-//   class ProviderFileTemplate < Provider::FileTemplate
-//     # All the products that are being compiled with the provider on this run
-//     attr_accessor :products
-
-//     # Optional path to the directory where overrides reside. Used to locate files
-//     # outside of the MM root directory
-//     attr_accessor :override_path
-
-//     def initialize(output_folder, version, env, products, override_path = nil)
-//       super()
-
-//       @output_folder = output_folder
-//       @version = version
-//       @env = env
-//       @products = products
-//       @override_path = override_path
-//     end
-//   end
-
-//   # Responsible for generating a file in the context of a product
-//   # with a given set of parameters.
-//   class ProductFileTemplate < Provider::FileTemplate
-//     # The name of the resource
-//     attr_accessor :name
-//     # The resource itself.
-//     attr_accessor :object
-//     # The entire API object.
-//     attr_accessor :product
-
-//     class << self
-//       # Construct a new ProductFileTemplate based on a resource object
-//       def file_for_resource(output_folder, object, version, env)
-//         file_template = new(output_folder, object.name, object.__product, version, env)
-//         file_template.object = object
-//         file_template
-//       end
-//     end
-
-//     def initialize(output_folder, name, product, version, env)
-//       super()
-
-//       @name = name
-//       @product = product
-//       @output_folder = output_folder
-//       @version = version
-//       @env = env
-//     end
-//   end
-// end
-
-//    def import_path
-//      case @target_version_name
-//      when 'ga'
-//        "#{TERRAFORM_PROVIDER_GA}/#{RESOURCE_DIRECTORY_GA}"
-//      when 'beta'
-//        "#{TERRAFORM_PROVIDER_BETA}/#{RESOURCE_DIRECTORY_BETA}"
-//      else
-//        "#{TERRAFORM_PROVIDER_PRIVATE}/#{RESOURCE_DIRECTORY_PRIVATE}"
-//      end
-//    end
-
-func (td *TemplateData) ImportPath() string {
-	if td.Version.Name == GA_VERSION {
-		return "github.com/hashicorp/terraform-provider-google/google"
-	} else if td.Version.Name == ALPHA_VERSION {
-		return "internal/terraform-next/google-private"
-	}
-	return "github.com/hashicorp/terraform-provider-google-beta/google-beta"
 }
 
 type TestInput struct {
-	Res                 api.Resource
-	ImportPath          string
-	PROJECT_NAME        string
-	CREDENTIALS         string
-	REGION              string
-	ORG_ID              string
-	ORG_DOMAIN          string
-	ORG_TARGET          string
-	PROJECT_NUMBER      string
-	BILLING_ACCT        string
-	MASTER_BILLING_ACCT string
-	SERVICE_ACCT        string
-	CUST_ID             string
-	IDENTITY_USER       string
-	PAP_DESCRIPTION     string
+	Res                  api.Resource
+	ImportPath           string
+	PROJECT_NAME         string
+	CREDENTIALS          string
+	REGION               string
+	ORG_ID               string
+	ORG_DOMAIN           string
+	ORG_TARGET           string
+	PROJECT_NUMBER       string
+	BILLING_ACCT         string
+	MASTER_BILLING_ACCT  string
+	SERVICE_ACCT         string
+	CUST_ID              string
+	IDENTITY_USER        string
+	PAP_DESCRIPTION      string
+	CHRONICLE_ID         string
+	VMWAREENGINE_PROJECT string
 }

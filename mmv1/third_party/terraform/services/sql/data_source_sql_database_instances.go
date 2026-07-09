@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-google/google/registry"
 	"github.com/hashicorp/terraform-provider-google/google/tpgresource"
 	transport_tpg "github.com/hashicorp/terraform-provider-google/google/transport"
 	sqladmin "google.golang.org/api/sqladmin/v1beta4"
@@ -102,7 +103,7 @@ func dataSourceSqlDatabaseInstancesRead(d *schema.ResourceData, meta interface{}
 		var instances *sqladmin.InstancesListResponse
 		err = transport_tpg.Retry(transport_tpg.RetryOptions{
 			RetryFunc: func() (rerr error) {
-				instances, rerr = config.NewSqlAdminClient(userAgent).Instances.List(project).Filter(filter).PageToken(pageToken).Do()
+				instances, rerr = NewClient(config, userAgent).Instances.List(project).Filter(filter).PageToken(pageToken).Do()
 				return rerr
 			},
 			Timeout:              d.Timeout(schema.TimeoutRead),
@@ -146,13 +147,15 @@ func flattenDatasourceGoogleDatabaseInstancesList(fetchedInstances []*sqladmin.D
 		instance["available_maintenance_versions"] = rawInstance.AvailableMaintenanceVersions
 		instance["instance_type"] = rawInstance.InstanceType
 		instance["service_account_email_address"] = rawInstance.ServiceAccountEmailAddress
-		instance["settings"] = flattenSettings(rawInstance.Settings, d)
+		instance["enforce_new_sql_network_architecture"] = rawInstance.SqlNetworkArchitecture == "NEW_NETWORK_ARCHITECTURE"
+		instance["settings"] = flattenSettings(rawInstance.Settings, rawInstance.InstanceType, d)
 
 		if rawInstance.DiskEncryptionConfiguration != nil {
 			instance["encryption_key_name"] = rawInstance.DiskEncryptionConfiguration.KmsKeyName
 		}
 
 		instance["replica_configuration"] = flattenReplicaConfigurationforDataSource(rawInstance.ReplicaConfiguration)
+		instance["replication_cluster"] = flattenReplicationClusterForDataSource(rawInstance.ReplicationCluster)
 
 		ipAddresses := flattenIpAddresses(rawInstance.IpAddresses)
 		instance["ip_address"] = ipAddresses
@@ -178,6 +181,7 @@ func flattenDatasourceGoogleDatabaseInstancesList(fetchedInstances []*sqladmin.D
 		instance["master_instance_name"] = strings.TrimPrefix(rawInstance.MasterInstanceName, project+":")
 		instance["project"] = project
 		instance["self_link"] = rawInstance.SelfLink
+		instance["psc_service_attachment_link"] = rawInstance.PscServiceAttachmentLink
 
 		instances = append(instances, instance)
 	}
@@ -197,4 +201,29 @@ func flattenReplicaConfigurationforDataSource(replicaConfiguration *sqladmin.Rep
 	}
 
 	return rc
+}
+
+// flattenReplicationClusterForDataSource converts cloud SQL backend ReplicationCluster (proto) to
+// terraform replication_cluster. We explicitly allow the case when ReplicationCluster
+// is nil since replication_cluster is computed+optional.
+func flattenReplicationClusterForDataSource(replicationCluster *sqladmin.ReplicationCluster) []map[string]interface{} {
+	data := make(map[string]interface{})
+	data["failover_dr_replica_name"] = ""
+	if replicationCluster != nil && replicationCluster.FailoverDrReplicaName != "" {
+		data["failover_dr_replica_name"] = replicationCluster.FailoverDrReplicaName
+	}
+	data["dr_replica"] = false
+	if replicationCluster != nil {
+		data["dr_replica"] = replicationCluster.DrReplica
+	}
+	return []map[string]interface{}{data}
+}
+
+func init() {
+	registry.Schema{
+		Name:        "google_sql_database_instances",
+		ProductName: "sql",
+		Type:        registry.SchemaTypeDataSource,
+		Schema:      DataSourceSqlDatabaseInstances(),
+	}.Register()
 }

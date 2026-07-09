@@ -6,7 +6,7 @@ description: |-
 
 # google_dns_record_set
 
-Manages a set of DNS records within Google Cloud DNS. For more information see [the official documentation](https://cloud.google.com/dns/records/) and
+Manages a set of DNS records within Google Cloud DNS. For more information see [the official documentation](https://cloud.google.com/dns/docs/records/) and
 [API](https://cloud.google.com/dns/api/v1/resourceRecordSets).
 
 ~> **Note:** The provider treats this resource as an authoritative record set. This means existing records (including the default records) for the given type will be overwritten when you create this resource in Terraform. In addition, the Google Cloud DNS API requires NS and SOA records to be present at all times, so Terraform will not actually remove NS or SOA records on the root of the zone during destroy but will report that it did.
@@ -218,6 +218,7 @@ resource "google_dns_record_set" "a" {
 resource "google_dns_managed_zone" "prod" {
   name     = "prod-zone"
   dns_name = "prod.mydomain.com."
+  visibility = "private"
 }
 
 resource "google_compute_forwarding_rule" "prod" {
@@ -238,6 +239,54 @@ resource "google_compute_region_backend_service" "prod" {
 
 resource "google_compute_network" "prod" {
   name = "prod-network"
+}
+```
+
+#### Public zone failover
+
+```hcl
+resource "google_dns_record_set" "a" {
+  name         = "backend.${google_dns_managed_zone.prod.dns_name}"
+  managed_zone = google_dns_managed_zone.prod.name
+  type         = "A"
+  ttl          = 300
+
+  routing_policy {
+    health_check = google_compute_health_check.http-health-check.id
+    primary_backup {
+      trickle_ratio = 0.1
+
+      primary {
+        external_endpoints = ["10.128.1.1"]
+      }
+
+      backup_geo {
+        location = "us-west1"
+        health_checked_targets {
+          external_endpoints = ["10.130.1.1"]
+        }
+      }
+    }
+  }
+}
+
+resource "google_compute_health_check" "http-health-check" {
+  name        = "http-health-check"
+  description = "Health check via http"
+
+  timeout_sec         = 5
+  check_interval_sec  = 30
+  healthy_threshold   = 4
+  unhealthy_threshold = 5
+
+  http_health_check {
+    port_specification = "USE_SERVING_PORT"
+  }
+}
+
+resource "google_dns_managed_zone" "prod" {
+  name     = "prod-zone"
+  dns_name = "prod.mydomain.com."
 }
 ```
 
@@ -266,6 +315,13 @@ The following arguments are supported:
 * `project` - (Optional) The ID of the project in which the resource belongs. If it
     is not provided, the provider project is used.
 
+* `deletion_policy` - (Optional) Whether Terraform will be prevented from destroying the resource. Defaults to "DELETE".
+    When a 'terraform destroy' or 'terraform apply' would delete the resource,
+    the command will fail if this field is set to "PREVENT" in Terraform state.
+    When set to "ABANDON", the command will remove the resource from Terraform
+    management without updating or deleting the resource in the API.
+    When set to "DELETE", deleting the resource is allowed.
+
 <a name="nested_routing_policy"></a>The `routing_policy` block supports:
 
 * `wrr` - (Optional) The configuration for Weighted Round Robin based routing policy.
@@ -278,6 +334,8 @@ The following arguments are supported:
 
 * `primary_backup` - (Optional) The configuration for a failover policy with global to regional failover. Queries are responded to with the global primary targets, but if none of the primary targets are healthy, then we fallback to a regional failover policy.
     Structure is [documented below](#nested_primary_backup).
+
+* `health_check` - (Optional) Specifies the health check (used with external endpoints).
 
 <a name="nested_wrr"></a>The `wrr` block supports:
 
@@ -311,8 +369,10 @@ The following arguments are supported:
 
 <a name="nested_health_checked_targets"></a>The `health_checked_targets` block supports:
 
-* `internal_load_balancers` - (Required) The list of internal load balancers to health check.
+* `internal_load_balancers` - (Optional) The list of internal load balancers to health check.
     Structure is [documented below](#nested_internal_load_balancers).
+
+* `external_endpoints` - (Optional) The list of external endpoint addresses to health check.
 
 <a name="nested_internal_load_balancers"></a>The `internal_load_balancers` block supports:
 

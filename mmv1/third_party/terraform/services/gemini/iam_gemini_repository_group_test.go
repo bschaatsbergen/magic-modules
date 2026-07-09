@@ -1,0 +1,422 @@
+// To run tests locally please replace the `oauth_token_secret_version` with your secret manager version.
+// More details: https://cloud.google.com/developer-connect/docs/connect-github-repo#before_you_begin
+package gemini_test
+
+import (
+	"fmt"
+	"log"
+	"net/http"
+	"testing"
+	"time"
+
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+
+	"github.com/hashicorp/terraform-provider-google/google/acctest"
+	"github.com/hashicorp/terraform-provider-google/google/envvar"
+	"github.com/hashicorp/terraform-provider-google/google/services/developerconnect"
+	_ "github.com/hashicorp/terraform-provider-google/google/services/gemini"
+	transport_tpg "github.com/hashicorp/terraform-provider-google/google/transport"
+)
+
+// For bootstrapping Developer Connect git repository link
+const SharedGitRepositoryLinkIdPrefix = "tf-bootstrap-git-repository-"
+
+func BootstrapGitRepository(t *testing.T, gitRepositoryLinkId, location, cloneUri, parentConnectionId string) string {
+	gitRepositoryLinkId = SharedGitRepositoryLinkIdPrefix + gitRepositoryLinkId
+
+	config := transport_tpg.BootstrapConfig(t)
+	if config == nil {
+		t.Fatal("Could not bootstrap config.")
+	}
+
+	log.Printf("[DEBUG] Getting shared git repository link %q", gitRepositoryLinkId)
+
+	getURL := fmt.Sprintf("%sprojects/%s/locations/%s/connections/%s/gitRepositoryLinks/%s",
+		transport_tpg.BaseUrl(developerconnect.Product, config), config.Project, location, parentConnectionId, gitRepositoryLinkId)
+
+	headers := make(http.Header)
+	_, err := transport_tpg.SendRequest(transport_tpg.SendRequestOptions{
+		Config:    config,
+		Method:    "GET",
+		Project:   config.Project,
+		RawURL:    getURL,
+		UserAgent: config.UserAgent,
+		Headers:   headers,
+	})
+
+	if err != nil && transport_tpg.IsGoogleApiErrorWithCode(err, 404) {
+		log.Printf("[DEBUG] Git repository link %q not found, bootstrapping", gitRepositoryLinkId)
+		obj := map[string]interface{}{
+			"clone_uri":   cloneUri,
+			"annotations": map[string]string{},
+		}
+
+		postURL := fmt.Sprintf("%sprojects/%s/locations/%s/connections/%s/gitRepositoryLinks?gitRepositoryLinkId=%s",
+			transport_tpg.BaseUrl(developerconnect.Product, config), config.Project, location, parentConnectionId, gitRepositoryLinkId)
+		headers := make(http.Header)
+		_, err := transport_tpg.SendRequest(transport_tpg.SendRequestOptions{
+			Config:    config,
+			Method:    "POST",
+			Project:   config.Project,
+			RawURL:    postURL,
+			UserAgent: config.UserAgent,
+			Body:      obj,
+			Timeout:   20 * time.Minute,
+			Headers:   headers,
+		})
+		if err != nil {
+			t.Fatalf("Error bootstrapping git repository link %q: %s", gitRepositoryLinkId, err)
+		}
+
+		_, err = transport_tpg.SendRequest(transport_tpg.SendRequestOptions{
+			Config:    config,
+			Method:    "GET",
+			Project:   config.Project,
+			RawURL:    getURL,
+			UserAgent: config.UserAgent,
+			Timeout:   20 * time.Minute,
+			Headers:   headers,
+		})
+		if err != nil {
+			t.Fatalf("Error getting git repository link %q: %s", gitRepositoryLinkId, err)
+		}
+	}
+
+	return gitRepositoryLinkId
+}
+
+const SharedConnectionIdPrefix = "tf-bootstrap-developer-connect-connection-"
+
+// For bootstrapping Developer Connect connection resources
+func BootstrapDeveloperConnection(t *testing.T, connectionId, location, tokenResource string, appInstallationId int) string {
+	connectionId = SharedConnectionIdPrefix + connectionId
+
+	config := transport_tpg.BootstrapConfig(t)
+	if config == nil {
+		t.Fatal("Could not bootstrap config.")
+	}
+
+	log.Printf("[DEBUG] Getting shared developer connection %q", connectionId)
+
+	getURL := fmt.Sprintf("%sprojects/%s/locations/%s/connections/%s",
+		transport_tpg.BaseUrl(developerconnect.Product, config), config.Project, location, connectionId)
+
+	headers := make(http.Header)
+	_, err := transport_tpg.SendRequest(transport_tpg.SendRequestOptions{
+		Config:    config,
+		Method:    "GET",
+		Project:   config.Project,
+		RawURL:    getURL,
+		UserAgent: config.UserAgent,
+		Headers:   headers,
+	})
+
+	if err != nil {
+		log.Printf("[DEBUG] Developer connection %q not found, bootstrapping", connectionId)
+		authorizerCredential := map[string]string{
+			"oauth_token_secret_version": tokenResource,
+		}
+		githubConfig := map[string]interface{}{
+			"github_app":            "DEVELOPER_CONNECT",
+			"app_installation_id":   appInstallationId,
+			"authorizer_credential": authorizerCredential,
+		}
+		obj := map[string]interface{}{
+			"disabled":      false,
+			"github_config": githubConfig,
+		}
+
+		postURL := fmt.Sprintf("%sprojects/%s/locations/%s/connections?connectionId=%s",
+			transport_tpg.BaseUrl(developerconnect.Product, config), config.Project, location, connectionId)
+		headers := make(http.Header)
+		_, err := transport_tpg.SendRequest(transport_tpg.SendRequestOptions{
+			Config:    config,
+			Method:    "POST",
+			Project:   config.Project,
+			RawURL:    postURL,
+			UserAgent: config.UserAgent,
+			Body:      obj,
+			Timeout:   20 * time.Minute,
+			Headers:   headers,
+		})
+		if err != nil {
+			t.Fatalf("Error bootstrapping developer connection %q: %s", connectionId, err)
+		}
+
+		_, err = transport_tpg.SendRequest(transport_tpg.SendRequestOptions{
+			Config:    config,
+			Method:    "GET",
+			Project:   config.Project,
+			RawURL:    getURL,
+			UserAgent: config.UserAgent,
+			Timeout:   20 * time.Minute,
+			Headers:   headers,
+		})
+		if err != nil {
+			t.Fatalf("Error getting developer connection %q: %s", connectionId, err)
+		}
+	}
+
+	return connectionId
+}
+
+func TestAccGeminiRepositoryGroupIamBinding(t *testing.T) {
+	location := "us-central1"
+	codeRepositoryIndexId := BootstrapSharedCodeRepositoryIndex(t, "basic", location, "", map[string]string{"ccfe_debug_note": "terraform_e2e_do_not_delete"})
+	developerConnectionId := BootstrapDeveloperConnection(t, "basic", location, "projects/502367051001/secrets/tf-test-cloudaicompanion-github-oauthtoken-c42e5c/versions/1", 54180648)
+	gitRepositoryLinkId := BootstrapGitRepository(t, "basic", location, "https://github.com/CC-R-github-robot/tf-test.git", developerConnectionId)
+	repositoryGroupId := "tf-test-iam-repository-group-id-" + acctest.RandString(t, 10)
+
+	context := map[string]interface{}{
+		"role":                  "roles/cloudaicompanion.repositoryGroupsUser",
+		"code_repository_index": codeRepositoryIndexId,
+		"location":              location,
+		"project":               envvar.GetTestProjectFromEnv(),
+		"connection_id":         developerConnectionId,
+		"git_link_id":           gitRepositoryLinkId,
+		"repository_group_id":   repositoryGroupId,
+	}
+
+	acctest.VcrTest(t, resource.TestCase{
+		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
+		Steps: []resource.TestStep{
+			{
+				Config: testAccGeminiRepositoryGroupIamBinding_basic(context),
+			},
+			{
+				ResourceName:      "google_gemini_repository_group_iam_binding.foo",
+				ImportStateId:     fmt.Sprintf("projects/%s/locations/%s/codeRepositoryIndexes/%s/repositoryGroups/%s roles/cloudaicompanion.repositoryGroupsUser", envvar.GetTestProjectFromEnv(), envvar.GetTestRegionFromEnv(), codeRepositoryIndexId, repositoryGroupId),
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+			{
+				// Test Iam Binding update
+				Config: testAccGeminiRepositoryGroupIamBinding_update(context),
+			},
+			{
+				ResourceName:      "google_gemini_repository_group_iam_binding.foo",
+				ImportStateId:     fmt.Sprintf("projects/%s/locations/%s/codeRepositoryIndexes/%s/repositoryGroups/%s roles/cloudaicompanion.repositoryGroupsUser", envvar.GetTestProjectFromEnv(), envvar.GetTestRegionFromEnv(), codeRepositoryIndexId, repositoryGroupId),
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+		},
+	})
+}
+
+func TestAccGeminiRepositoryGroupIamMember(t *testing.T) {
+	location := "us-central1"
+	codeRepositoryIndexId := BootstrapSharedCodeRepositoryIndex(t, "basic", location, "", map[string]string{"ccfe_debug_note": "terraform_e2e_do_not_delete"})
+	developerConnectionId := BootstrapDeveloperConnection(t, "basic", location, "projects/502367051001/secrets/tf-test-cloudaicompanion-github-oauthtoken-c42e5c/versions/1", 54180648)
+	gitRepositoryLinkId := BootstrapGitRepository(t, "basic", location, "https://github.com/CC-R-github-robot/tf-test.git", developerConnectionId)
+	repositoryGroupId := "tf-test-iam-repository-group-id-" + acctest.RandString(t, 10)
+
+	context := map[string]interface{}{
+		"role":                  "roles/cloudaicompanion.repositoryGroupsUser",
+		"code_repository_index": codeRepositoryIndexId,
+		"location":              location,
+		"project":               envvar.GetTestProjectFromEnv(),
+		"connection_id":         developerConnectionId,
+		"git_link_id":           gitRepositoryLinkId,
+		"repository_group_id":   repositoryGroupId,
+	}
+
+	acctest.VcrTest(t, resource.TestCase{
+		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
+		Steps: []resource.TestStep{
+			{
+				// Test Iam Member creation (no update for member, no need to test)
+				Config: testAccGeminiRepositoryGroupIamMember_basic(context),
+			},
+			{
+				ResourceName:      "google_gemini_repository_group_iam_member.foo",
+				ImportStateId:     fmt.Sprintf("projects/%s/locations/%s/codeRepositoryIndexes/%s/repositoryGroups/%s roles/cloudaicompanion.repositoryGroupsUser user:admin@hashicorptest.com", envvar.GetTestProjectFromEnv(), envvar.GetTestRegionFromEnv(), codeRepositoryIndexId, repositoryGroupId),
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+		},
+	})
+}
+
+func TestAccGeminiRepositoryGroupIamPolicy(t *testing.T) {
+	location := "us-central1"
+	codeRepositoryIndexId := BootstrapSharedCodeRepositoryIndex(t, "basic", location, "", map[string]string{"ccfe_debug_note": "terraform_e2e_do_not_delete"})
+	developerConnectionId := BootstrapDeveloperConnection(t, "basic", location, "projects/502367051001/secrets/tf-test-cloudaicompanion-github-oauthtoken-c42e5c/versions/1", 54180648)
+	gitRepositoryLinkId := BootstrapGitRepository(t, "basic", location, "https://github.com/CC-R-github-robot/tf-test.git", developerConnectionId)
+	repositoryGroupId := "tf-test-iam-repository-group-id-" + acctest.RandString(t, 10)
+
+	context := map[string]interface{}{
+		"role":                  "roles/cloudaicompanion.repositoryGroupsUser",
+		"code_repository_index": codeRepositoryIndexId,
+		"location":              location,
+		"project":               envvar.GetTestProjectFromEnv(),
+		"connection_id":         developerConnectionId,
+		"git_link_id":           gitRepositoryLinkId,
+		"repository_group_id":   repositoryGroupId,
+	}
+
+	acctest.VcrTest(t, resource.TestCase{
+		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
+		Steps: []resource.TestStep{
+			{
+				Config: testAccGeminiRepositoryGroupIamPolicy_basic(context),
+				Check:  resource.TestCheckResourceAttrSet("data.google_gemini_repository_group_iam_policy.foo", "policy_data"),
+			},
+			{
+				ResourceName:      "google_gemini_repository_group_iam_policy.foo",
+				ImportStateId:     fmt.Sprintf("projects/%s/locations/%s/codeRepositoryIndexes/%s/repositoryGroups/%s", envvar.GetTestProjectFromEnv(), envvar.GetTestRegionFromEnv(), codeRepositoryIndexId, repositoryGroupId),
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+			{
+				Config: testAccGeminiRepositoryGroupIamPolicy_emptyBinding(context),
+			},
+			{
+				ResourceName:      "google_gemini_repository_group_iam_policy.foo",
+				ImportStateId:     fmt.Sprintf("projects/%s/locations/%s/codeRepositoryIndexes/%s/repositoryGroups/%s", envvar.GetTestProjectFromEnv(), envvar.GetTestRegionFromEnv(), codeRepositoryIndexId, repositoryGroupId),
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+		},
+	})
+}
+
+func testAccGeminiRepositoryGroupIamMember_basic(context map[string]interface{}) string {
+	return acctest.Nprintf(`
+resource "google_gemini_repository_group_iam_member" "foo" {
+  project = "%{project}"
+  location = "%{location}"
+  code_repository_index = "%{code_repository_index}"
+  repository_group_id = google_gemini_repository_group.example.repository_group_id
+  role = "%{role}"
+  member = "user:admin@hashicorptest.com"
+}
+
+resource "google_gemini_repository_group" "example" {
+  location = "us-central1"
+  code_repository_index = "%{code_repository_index}"
+  repository_group_id = "%{repository_group_id}"
+  repositories {
+    resource = "projects/%{project}/locations/us-central1/connections/%{connection_id}/gitRepositoryLinks/%{git_link_id}"
+    branch_pattern = "main"
+  }
+  labels = {"label1": "value1"}
+}
+`, context)
+}
+
+func testAccGeminiRepositoryGroupIamPolicy_basic(context map[string]interface{}) string {
+	return acctest.Nprintf(`
+data "google_iam_policy" "foo" {
+  binding {
+    role = "%{role}"
+    members = ["user:admin@hashicorptest.com"]
+  }
+}
+
+resource "google_gemini_repository_group_iam_policy" "foo" {
+  project = "%{project}"
+  location = "%{location}"
+  code_repository_index = "%{code_repository_index}"
+  repository_group_id = google_gemini_repository_group.example.repository_group_id
+  policy_data = data.google_iam_policy.foo.policy_data
+}
+
+data "google_gemini_repository_group_iam_policy" "foo" {
+  project = "%{project}"
+  location = "%{location}"
+  code_repository_index = "%{code_repository_index}"
+  repository_group_id = google_gemini_repository_group.example.repository_group_id
+  depends_on = [
+    google_gemini_repository_group_iam_policy.foo
+  ]
+}
+
+resource "google_gemini_repository_group" "example" {
+  location = "us-central1"
+  code_repository_index = "%{code_repository_index}"
+  repository_group_id = "%{repository_group_id}"
+  repositories {
+    resource = "projects/%{project}/locations/us-central1/connections/%{connection_id}/gitRepositoryLinks/%{git_link_id}"
+    branch_pattern = "main"
+  }
+  labels = {"label1": "value1"}
+}
+`, context)
+}
+
+func testAccGeminiRepositoryGroupIamPolicy_emptyBinding(context map[string]interface{}) string {
+	return acctest.Nprintf(`
+data "google_iam_policy" "foo" {
+}
+
+resource "google_gemini_repository_group_iam_policy" "foo" {
+  project = "%{project}"
+  location = "%{location}"
+  code_repository_index = "%{code_repository_index}"
+  repository_group_id = google_gemini_repository_group.example.repository_group_id
+  policy_data = data.google_iam_policy.foo.policy_data
+}
+
+resource "google_gemini_repository_group" "example" {
+  location = "us-central1"
+  code_repository_index = "%{code_repository_index}"
+  repository_group_id = "%{repository_group_id}"
+  repositories {
+    resource = "projects/%{project}/locations/us-central1/connections/%{connection_id}/gitRepositoryLinks/%{git_link_id}"
+    branch_pattern = "main"
+  }
+  labels = {"label1": "value1"}
+}
+`, context)
+}
+
+func testAccGeminiRepositoryGroupIamBinding_basic(context map[string]interface{}) string {
+	return acctest.Nprintf(`
+resource "google_gemini_repository_group_iam_binding" "foo" {
+  project = "%{project}"
+  location = "%{location}"
+  code_repository_index = "%{code_repository_index}"
+  repository_group_id = google_gemini_repository_group.example.repository_group_id
+  role = "%{role}"
+  members = ["user:admin@hashicorptest.com"]
+}
+
+resource "google_gemini_repository_group" "example" {
+  location = "us-central1"
+  code_repository_index = "%{code_repository_index}"
+  repository_group_id = "%{repository_group_id}"
+  repositories {
+    resource = "projects/%{project}/locations/us-central1/connections/%{connection_id}/gitRepositoryLinks/%{git_link_id}"
+    branch_pattern = "main"
+  }
+  labels = {"label1": "value1"}
+}
+`, context)
+}
+
+func testAccGeminiRepositoryGroupIamBinding_update(context map[string]interface{}) string {
+	return acctest.Nprintf(`
+resource "google_gemini_repository_group_iam_binding" "foo" {
+  project = "%{project}"
+  location = "%{location}"
+  code_repository_index = "%{code_repository_index}"
+  repository_group_id = google_gemini_repository_group.example.repository_group_id
+  role = "%{role}"
+  members = ["user:admin@hashicorptest.com", "user:gterraformtest1@gmail.com"]
+}
+
+resource "google_gemini_repository_group" "example" {
+  location = "us-central1"
+  code_repository_index = "%{code_repository_index}"
+  repository_group_id = "%{repository_group_id}"
+  repositories {
+    resource = "projects/%{project}/locations/us-central1/connections/%{connection_id}/gitRepositoryLinks/%{git_link_id}"
+    branch_pattern = "main"
+  }
+  labels = {"label1": "value1"}
+}
+`, context)
+}

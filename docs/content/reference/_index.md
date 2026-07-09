@@ -1,4 +1,6 @@
 ---
 title: "Reference"
-weight: 40
+weight: 70
+params:
+  bookCollapseSection: true
 ---

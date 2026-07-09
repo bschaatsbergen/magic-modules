@@ -1,14 +1,16 @@
 ---
-subcategory: "Cloud Platform"
+subcategory: "Service Networking"
 description: |-
  Allows management of a single peered DNS domain on a project.
 ---
 
-# google_project_service_peered_dns_domain
+# google_service_networking_peered_dns_domain
 
 Allows management of a single peered DNS domain for an existing Google Cloud Platform project.
 
 When using Google Cloud DNS to manage internal DNS, create peered DNS domains to make your DNS available to services like Google Cloud Build.
+
+For more information see [the API](https://cloud.google.com/service-infrastructure/docs/service-networking/reference/rest/v1/services.projects.global.networks.peeredDnsDomains)
 
 ## Example Usage
 
@@ -35,6 +37,13 @@ The following arguments are supported:
 * `dns_suffix` - (Required) The DNS domain suffix of the peered DNS domain. Make sure to suffix with a `.` (dot).
 
 * `service` - (Optional) Private service connection between service and consumer network, defaults to `servicenetworking.googleapis.com`
+
+* `deletion_policy` - (Optional) Whether Terraform will be prevented from destroying the resource. Defaults to "DELETE".
+    When a 'terraform destroy' or 'terraform apply' would delete the resource,
+    the command will fail if this field is set to "PREVENT" in Terraform state.
+    When set to "ABANDON", the command will remove the resource from Terraform
+    management without updating or deleting the resource in the API.
+    When set to "DELETE", deleting the resource is allowed.
 
 ## Attributes Reference
 

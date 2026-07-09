@@ -1,0 +1,70 @@
+{{/*
+	The license inside this block applies to this file
+	Copyright 2024 Google Inc.
+	Licensed under the Apache License, Version 2.0 (the "License");
+	you may not use this file except in compliance with the License.
+	You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+	Unless required by applicable law or agreed to in writing, software
+	distributed under the License is distributed on an "AS IS" BASIS,
+	WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+	See the License for the specific language governing permissions and
+	limitations under the License.
+*/ -}}
+func flatten{{$.GetPrefix}}{{$.TitlelizeProperty}}(v interface{}, d *schema.ResourceData, config *transport_tpg.Config) (interface{}) {
+  if v == nil {
+    return nil
+  }
+  headers, ok := v.(map[string]interface{})
+  if !ok {
+    return nil
+  }
+  if v, ok := headers["User-Agent"]; ok {
+    if userAgent, ok := v.(string); ok {
+      if userAgent == "AppEngine-Google; (+http://code.google.com/appengine)" {
+        delete(headers, "User-Agent")
+      } else if userAgent == "Google-Cloud-Scheduler" {
+        delete(headers, "User-Agent")
+      } else {
+        headers["User-Agent"] = strings.TrimSpace(strings.Replace(userAgent, "AppEngine-Google; (+http://code.google.com/appengine)","", -1))
+      }
+    }
+  }
+  if v, ok := headers["Content-Type"]; ok {
+    if contentType, ok := v.(string); ok {
+      if contentType == "application/octet-stream" {
+        delete(headers, "Content-Type")
+      }
+    }
+  }
+  r := regexp.MustCompile(`(X-Google-|X-AppEngine-|Content-Length).*`)
+  for key := range headers {
+    if r.MatchString(key) {
+      delete(headers, key)
+    }
+  }
+  // The Cloud Scheduler API injects an `Authorization` header on read whenever
+  // `oidc_token` or `oauth_token` is configured on the http_target, even though
+  // it is not part of the user-supplied `headers` map. Leaving it in state
+  // causes perpetual drift against the configuration. Strip it only when one
+  // of the token blocks is set, so users who legitimately send a literal
+  // `Authorization` header (without token auth) are not affected.
+  //
+  // Note: this template is also used for `app_engine_http_target.headers`,
+  // which has no `oidc_token` / `oauth_token` siblings — the d.Get() lookups
+  // below return zero-valued counts in that case, so the Authorization key is
+  // preserved as-is for App Engine targets.
+  if d != nil {
+    oidcSet := false
+    oauthSet := false
+    if v, ok := d.Get("http_target.0.oidc_token.#").(int); ok && v > 0 {
+      oidcSet = true
+    }
+    if v, ok := d.Get("http_target.0.oauth_token.#").(int); ok && v > 0 {
+      oauthSet = true
+    }
+    if oidcSet || oauthSet {
+      delete(headers, "Authorization")
+    }
+  }
+	return headers
+}

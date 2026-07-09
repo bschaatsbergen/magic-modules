@@ -11,12 +11,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
---- !ruby/object:Api::Product
-versions:
-  - !ruby/object:Api::Product::Version
-    base_url: https://managedkafka.googleapis.com/v1/
-    name: beta
+---
 name: ManagedKafka
 display_name: Managed Kafka
 scopes:
   - https://www.googleapis.com/auth/cloud-platform
+versions:
+  - name: ga
+    base_url: https://managedkafka.googleapis.com/v1/
+  - name: beta
+    base_url: https://managedkafka.googleapis.com/v1/

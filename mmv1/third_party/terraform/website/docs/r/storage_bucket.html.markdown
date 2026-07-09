@@ -38,6 +38,12 @@ resource "google_storage_bucket" "static-site" {
     response_header = ["*"]
     max_age_seconds = 3600
   }
+  cors {
+    origin            = ["http://image-store.com"]
+    method            = ["GET", "HEAD", "PUT", "POST", "DELETE"]
+    response_header   = ["*"]
+    max_age_seconds   = 0
+  }
 }
 ```
 
@@ -94,7 +100,7 @@ resource "google_storage_bucket" "no-age-enabled" {
 ## Example Usage - Enabling public access prevention
 
 ```hcl
-resource "google_storage_bucket" "auto-expire" {
+resource "google_storage_bucket" "no-public-access" {
   name          = "no-public-access-bucket"
   location      = "US"
   force_destroy = true
@@ -103,19 +109,101 @@ resource "google_storage_bucket" "auto-expire" {
 }
 ```
 
+## Example Usage - Enabling hierarchical namespace
+
+```hcl
+resource "google_storage_bucket" "hns-enabled" {
+  name          = "hns-enabled-bucket"
+  location      = "US"
+  force_destroy = true
+
+  hierarchical_namespace {
+    enabled = true
+  }
+}
+```
+
+## Example Usage - IP filter mode enabled
+
+```hcl
+resource "google_storage_bucket" "hns-enabled" {
+  name          = "hns-enabled-bucket"
+  location      = "US"
+  force_destroy = true
+
+  ip_filter  {
+    mode = "Enabled"
+    public_network_source {
+      allowed_ip_cidr_ranges = ["0.0.0.0/0", "::/0"]
+    }
+  }
+}
+```
+
+## Example Usage - IP filter mode disabled
+
+```hcl
+resource "google_storage_bucket" "hns-enabled" {
+  name          = "hns-enabled-bucket"
+  location      = "US"
+  force_destroy = true
+
+  ip_filter  {
+    mode = "Disabled"
+    public_network_source {
+      allowed_ip_cidr_ranges = ["0.0.0.0/0", "::/0"]
+    }
+  }
+}
+```
+## Example Usage - Enabling encryption enforcement config
+
+```hcl
+resource "google_storage_bucket" "hns-enabled" {
+  name          = "hns-enabled-bucket"
+  location      = "US"
+  force_destroy = true
+
+  encryption  {
+    google_managed_encryption_enforcement_config {
+      restriction_mode = "FullyRestricted"
+    }
+    customer_managed_encryption_enforcement_config {
+      restriction_mode = "FullyRestricted"
+    }
+    customer_supplied_encryption_enforcement_config {
+      restriction_mode = "NotRestricted"
+    }
+  }
+}
+```
+## Example Usage - Enabling RAPID storage bucket
+
+```hcl
+resource "google_storage_bucket" "zonal_bucket" {
+  location                    = "US-CENTRAL1"
+  custom_placement_config {
+    data_locations = ["US-CENTRAL1-B"]
+  }
+  name                        = "zonal-rapid-bucket"
+  storage_class               = "RAPID"
+  hierarchical_namespace {
+    enabled = true
+  }
+}
+```
+
 ## Argument Reference
 
 The following arguments are supported:
 
-* `name` - (Required) The name of the bucket.
+* `name` - (Required) The name of the bucket. Bucket names must be in lowercase and no more than 63 characters long. You can find the complete list of bucket naming rules [here](https://cloud.google.com/storage/docs/buckets#naming).
 
 * `location` - (Required) The [GCS location](https://cloud.google.com/storage/docs/bucket-locations).
 
 - - -
 
-* `force_destroy` - (Optional, Default: false) When deleting a bucket, this
-    boolean option will delete all contained objects. If you try to delete a
-    bucket that contains objects, Terraform will fail that run.
+* `force_destroy` - (Optional, Default: false) When true, before deleting a bucket, delete all objects within the bucket, or Anywhere Caches caching data for that bucket. Otherwise, buckets with objects/caches will fail. Anywhere Cache requires additional permissions to interact with and will be assumed not present when Terraform is not permissioned, attempting to delete the bucket anyways. This may result in the objects in the bucket getting destroyed but not the bucket itself if there is a cache in use with the bucket. Force deletion may take a long time to delete buckets with lots of objects or with any Anywhere Caches (80m+).
 
 * `project` - (Optional) The ID of the project in which the resource belongs. If it
     is not provided, the provider project is used.
@@ -151,11 +239,26 @@ The following arguments are supported:
 
 * `uniform_bucket_level_access` - (Optional, Default: false) Enables [Uniform bucket-level access](https://cloud.google.com/storage/docs/uniform-bucket-level-access) access to a bucket.
 
-* `public_access_prevention` - (Optional) Prevents public access to a bucket. Acceptable values are "inherited" or "enforced". If "inherited", the bucket uses [public access prevention](https://cloud.google.com/storage/docs/public-access-prevention). only if the bucket is subject to the public access prevention organization policy constraint. Defaults to "inherited".
+* `public_access_prevention` - (Optional) Prevents public access to a bucket. Acceptable values are "inherited" or "enforced". If "inherited", the bucket uses [public access prevention](https://cloud.google.com/storage/docs/public-access-prevention) only if the bucket is subject to the public access prevention organization policy constraint. Defaults to "inherited".
 
 * `custom_placement_config` - (Optional) The bucket's custom location configuration, which specifies the individual regions that comprise a dual-region bucket. If the bucket is designated a single or multi-region, the parameters are empty. Structure is [documented below](#nested_custom_placement_config).
 
 * `soft_delete_policy` -  (Optional, Computed) The bucket's soft delete policy, which defines the period of time that soft-deleted objects will be retained, and cannot be permanently deleted. If the block is not provided, Server side value will be kept which means removal of block won't generate any terraform change. Structure is [documented below](#nested_soft_delete_policy).
+
+* `hierarchical_namespace` -  (Optional, ForceNew) The bucket's hierarchical namespace policy, which defines the bucket capability to handle folders in logical structure. Structure is [documented below](#nested_hierarchical_namespace). To use this configuration, `uniform_bucket_level_access` must be enabled on bucket.
+
+* `time_created` -  (Computed) The creation time of the bucket in RFC 3339 format.
+
+* `updated` -  (Computed) The time at which the bucket's metadata or IAM policy was last updated, in RFC 3339 format.
+
+* `ip_filter` -  (Optional) The bucket IP filtering configuration. Specifies the network sources that can access the bucket, as well as its underlying objects. Structure is [documented below](#nested_ip_filter).
+
+* `deletion_policy` - (Optional) Whether Terraform will be prevented from destroying the resource. Defaults to "DELETE".
+    When a 'terraform destroy' or 'terraform apply' would delete the resource,
+    the command will fail if this field is set to "PREVENT" in Terraform state.
+    When set to "ABANDON", the command will remove the resource from Terraform
+    management without updating or deleting the resource in the API.
+    When set to "DELETE", deleting the resource is allowed.
 
 <a name="nested_lifecycle_rule"></a>The `lifecycle_rule` block supports:
 
@@ -201,6 +304,10 @@ The following arguments are supported:
 
 * `noncurrent_time_before` - (Optional) Relevant only for versioned objects. The date in RFC 3339 (e.g. `2017-06-13`) when the object became nonconcurrent. Due to a current bug you are unable to set this value to `0` within Terraform. When set to `0` it will be ignored, and your state will treat it as though you supplied no `noncurrent_time_before` condition.
 
+* `size_above_bytes` - (Optional) Objects having a size greater than this value in bytes will be matched.
+
+* `size_below_bytes` - (Optional) Objects having a size smaller than this value in bytes will be matched.
+
 <a name="nested_autoclass"></a>The `autoclass` block supports:
 
 * `enabled` - (Required) While set to `true`, autoclass automatically transitions objects in your bucket to appropriate storage classes based on each object's access pattern.
@@ -233,7 +340,7 @@ The following arguments are supported:
 
 * `is_locked` - (Optional) If set to `true`, the bucket will be [locked](https://cloud.google.com/storage/docs/using-bucket-lock#lock-bucket) and permanently restrict edits to the bucket's retention policy.  Caution: Locking a bucket is an irreversible action.
 
-* `retention_period` - (Required) The period of time, in seconds, that objects in the bucket must be retained and cannot be deleted, overwritten, or archived. The value must be less than 2,147,483,647 seconds.
+* `retention_period` - (Required) The period of time, in seconds, that objects in the bucket must be retained and cannot be deleted, overwritten, or archived. The value must be less than 3,155,760,000 seconds.
 
 <a name="nested_logging"></a>The `logging` block supports:
 
@@ -244,7 +351,7 @@ The following arguments are supported:
 
 <a name="nested_encryption"></a>The `encryption` block supports:
 
-* `default_kms_key_name`: The `id` of a Cloud KMS key that will be used to encrypt objects inserted into this bucket, if no encryption method is specified.
+* `default_kms_key_name` -  (Optional) The `id` of a Cloud KMS key that will be used to encrypt objects inserted into this bucket, if no encryption method is specified.
   You must pay attention to whether the crypto key is available in the location that this bucket is created in.
   See [the docs](https://cloud.google.com/storage/docs/encryption/using-customer-managed-keys) for more details.
 
@@ -259,6 +366,17 @@ The following arguments are supported:
   state of the project.
   You should take care for race conditions when the same Terraform manages IAM policy on the Cloud KMS crypto key. See the data source page for more details.
 
+* `google_managed_encryption_enforcement_config`: (Optional) If omitted, then new objects with GMEK encryption-type is allowed. If set, then new objects created in this bucket must comply with enforcement config. Changing this has no effect on existing objects; it applies to new objects only, Structure is documented below [documented below](#nested_google_managed_encryption_enforcement_config).
+
+* `customer_managed_encryption_enforcement_config`: (Optional) If omitted, then new objects with CMEK encryption-type is allowed. If set, then new objects created in this bucket must comply with enforcement config. Changing this has no effect on existing objects; it applies to new objects only, Structure is documented below [documented below](#nested_customer_managed_encryption_enforcement_config).
+
+* `customer_supplied_encryption_enforcement_config`: (Optional) If omitted, then new objects with CSEK encryption-type is allowed. If set, then new objects created in this bucket must comply with enforcement config. Changing this has no effect on existing objects; it applies to new objects only, Structure is documented below [documented below](#nested_customer_supplied_encryption_enforcement_config).
+* `google_managed_encryption_enforcement_config` - (Optional) If omitted, then new objects with GMEK encryption-type is allowed. If set, then new objects created in this bucket must comply with enforcement config. Changing this has no effect on existing objects; it applies to new objects only, Structure is documented below [documented below](#nested_google_managed_encryption_enforcement_config).
+
+* `customer_managed_encryption_enforcement_config` - (Optional) If omitted, then new objects with CMEK encryption-type is allowed. If set, then new objects created in this bucket must comply with enforcement config. Changing this has no effect on existing objects; it applies to new objects only, Structure is documented below [documented below](#nested_customer_managed_encryption_enforcement_config).
+
+* `customer_supplied_encryption_enforcement_config` - (Optional) If omitted, then new objects with CSEK encryption-type is allowed. If set, then new objects created in this bucket must comply with enforcement config. Changing this has no effect on existing objects; it applies to new objects only, Structure is documented below [documented below](#nested_customer_supplied_encryption_enforcement_config).
+
 <a name="nested_custom_placement_config"></a>The `custom_placement_config` block supports:
 
 * `data_locations` - (Required) The list of individual regions that comprise a dual-region bucket. See [Cloud Storage bucket locations](https://cloud.google.com/storage/docs/dual-regions#availability) for a list of acceptable regions. **Note**: If any of the data_locations changes, it will [recreate the bucket](https://cloud.google.com/storage/docs/locations#key-concepts).
@@ -268,6 +386,54 @@ The following arguments are supported:
 * `retention_duration_seconds` - (Optional, Default: 604800) The duration in seconds that soft-deleted objects in the bucket will be retained and cannot be permanently deleted. Default value is 604800. The value must be in between 604800(7 days) and 7776000(90 days). **Note**: To disable the soft delete policy on a bucket, This field must be set to 0.
 
 * `effective_time` - (Computed) Server-determined value that indicates the time from which the policy, or one with a greater retention, was effective. This value is in RFC 3339 format.
+
+<a name="nested_hierarchical_namespace"></a>The `hierarchical_namespace` block supports:
+
+* `enabled` - (Required) Enables hierarchical namespace for the bucket.
+
+<a name="nested_ip_filter"></a>The `ip_filter` block supports:
+
+* `mode` - (Required) The state of the IP filter configuration. Valid values are `Enabled` and `Disabled`. When set to `Enabled`, IP filtering rules are applied to a bucket and all incoming requests to the bucket are evaluated against these rules. When set to `Disabled`, IP filtering rules are not applied to a bucket.
+
+**Note**: Once ip_filter is setup, it can either be `Enabled` or `Disabled` and cannot be removed from config.
+
+**Note**: `allow_all_service_agent_access` must be supplied when `mode` is set to `Enabled`, it can be ommited for other values.
+
+* `allow_cross_org_vpcs` - (Optional) While set `true`, allows cross-org VPCs in the bucket's IP filter configuration.
+
+* `allow_all_service_agent_access` (Optional) While set `true`, allows all service agents to access the bucket regardless of the IP filter configuration.
+
+* `public_network_source` - (Optional) The public network IP address ranges that can access the bucket and its data. Structure is [documented below](#nested_public_network_source).
+
+* `vpc_network_sources` - (Optional) The list of VPC networks that can access the bucket. Structure is [documented below](#nested_vpc_network_sources).
+
+<a name="nested_public_network_source"></a>The `public_network_source` block supports:
+
+* `allowed_ip_cidr_ranges` - The list of public IPv4 and IPv6 CIDR ranges that can access the bucket and its data.
+
+<a name="nested_vpc_network_sources"></a>The `vpc_network_sources` block supports:
+
+* `network` - Name of the network. Format: `projects/PROJECT_ID/global/networks/NETWORK_NAME`
+
+* `allowed_ip_cidr_ranges` - The list of public or private IPv4 and IPv6 CIDR ranges that can access the bucket.
+
+<a name="nested_google_managed_encryption_enforcement_config"></a>The `google_managed_encryption_enforcement_config` block supports:
+
+* `restriction_mode` - (Required) Whether Google Managed Encryption (GMEK) is restricted for new objects within the bucket. If FullyRestricted, new objects can't be created using GMEK encryption. If NotRestricted or unset, creation of new objects with GMEK encryption is allowed.
+
+* `effective_time` - Time from which the config was effective.
+
+<a name="nested_customer_supplied_encryption_enforcement_config"></a>The `customer_supplied_encryption_enforcement_config` block supports:
+
+* `restriction_mode` - (Required) Whether Customer Supplied Encryption (CSEK) is restricted for new objects within the bucket. If FullyRestricted, new objects can't be created using CSEK encryption. If NotRestricted or unset, creation of new objects with CSEK encryption is allowed.
+
+* `effective_time` - Time from which the config was effective.
+
+<a name="nested_customer_managed_encryption_enforcement_config"></a>The `customer_managed_encryption_enforcement_config` block supports:
+
+* `restriction_mode` - (Required) Whether Customer Managed Encryption (CMEK) is restricted for new objects within the bucket. If FullyRestricted, new objects can't be created using CMEK encryption. If NotRestricted or unset, creation of new objects with CMEK encryption is allowed.
+
+* `effective_time` - Time from which the config was effective.
 
 ## Attributes Reference
 
@@ -302,6 +468,18 @@ In Terraform v1.5.0 and later, use an [`import` block](https://developer.hashico
 ```tf
 import {
   id = "{{project_id}}/{{bucket}}"
+  to = google_storage_bucket.default
+}
+```
+
+In Terraform v1.12.0 and later, use an [`identity` block](https://developer.hashicorp.com/terraform/language/block/import#identity) to import Storage buckets using identity values. For example:
+
+```tf
+import {
+  identity = {
+    project = "{{project_id}}"
+    name    = "{{bucket}}"
+  }
   to = google_storage_bucket.default
 }
 ```

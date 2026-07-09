@@ -15,8 +15,6 @@ package resource
 
 // Inserts custom strings into terraform resource docs.
 type Docs struct {
-	// google.YamlValidator
-
 	// All these values should be strings, which will be inserted
 	// directly into the terraform resource documentation.  The
 	// strings should _not_ be the names of template files
@@ -26,27 +24,15 @@ type Docs struct {
 	// template.
 	// The text will be injected at the bottom of the specified
 	// section.
-	// attr_reader :
-	Warning string
+	Warning string `yaml:"warning,omitempty"`
 
-	// attr_reader :
-	Note string
+	Note string `yaml:"note,omitempty"`
 
-	// attr_reader :
-	RequiredProperties string `yaml:"required_properties"`
+	RequiredProperties string `yaml:"required_properties,omitempty"`
 
-	// attr_reader :
-	OptionalProperties string `yaml:"optional_properties"`
+	OptionalProperties string `yaml:"optional_properties,omitempty"`
 
-	// attr_reader :
-	Attributes string
+	WriteOnlyProperties string `yaml:"write_only_properties,omitempty"`
+
+	Attributes string `yaml:"attributes,omitempty"`
 }
-
-// def validate
-//   super
-//   check :warning, type: String
-//   check :note, type: String
-//   check :required_properties, type: String
-//   check :optional_properties, type: String
-//   check :attributes, type: String
-// end

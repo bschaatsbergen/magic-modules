@@ -1,0 +1,40 @@
+name: gofmt
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - "**/*.go"
+
+jobs:
+  run-gofmt:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+      - name: Merge base branch
+        id: pull_request
+        run: |
+          git config user.name "modular-magician"
+          git config user.email "magic-modules@google.com"
+          git fetch origin ${GITHUB_BASE_REF} # Fetch the base branch
+          git merge --no-ff origin/${GITHUB_BASE_REF} # Merge with the base branch
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: '^1.26'
+      - name: gofmt
+        run: |
+          GOFMT_OUTPUT="$(gofmt -l .)"
+          # Currently no simple way to get a non-0 exit code directly from
+          # gofmt
+          if [ -n "$GOFMT_OUTPUT" ]; then 
+            echo "The following files are not formatted properly:" >&2
+            echo "$GOFMT_OUTPUT" >&2
+            exit 1
+          fi
+          echo "gofmt-output=gofmt success" >> "$GITHUB_OUTPUT"

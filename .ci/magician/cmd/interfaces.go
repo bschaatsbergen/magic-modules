@@ -17,27 +17,44 @@ package cmd
 
 import (
 	"magician/github"
+	"magician/teamcity"
+	"net/url"
 )
 
 type GithubClient interface {
 	GetPullRequest(prNumber string) (github.PullRequest, error)
+	GetPullRequestAuthor(prNumber string) (string, error)
 	GetPullRequests(state, base, sort, direction string) ([]github.PullRequest, error)
 	GetPullRequestRequestedReviewers(prNumber string) ([]github.User, error)
 	GetPullRequestPreviousReviewers(prNumber string) ([]github.User, error)
+	GetPullRequestComments(prNumber string) ([]github.PullRequestComment, error)
+	GetPullRequestComment(commentID int) (github.PullRequestComment, error)
+	GetCommitMessage(owner, repo, sha string) (string, error)
 	GetUserType(user string) github.UserType
 	GetTeamMembers(organization, team string) ([]github.User, error)
 	MergePullRequest(owner, repo, prNumber, commitSha string) error
 	PostBuildStatus(prNumber, title, state, targetURL, commitSha string) error
-	PostComment(prNumber, comment string) error
+	PostComment(prNumber, comment string) (int, error)
+	UpdateComment(prNumber, comment string, id int) error
 	RequestPullRequestReviewers(prNumber string, reviewers []string) error
+	RemovePullRequestReviewers(prNumber string, reviewers []string) error
 	AddLabels(prNumber string, labels []string) error
 	RemoveLabel(prNumber, label string) error
 	CreateWorkflowDispatchEvent(workflowFileName string, inputs map[string]any) error
 }
 
 type CloudbuildClient interface {
-	ApproveCommunityChecker(prNumber, commitSha string) error
-	TriggerMMPresubmitRuns(commitSha string, substitutions map[string]string) error
+	ApproveDownstreamGenAndTest(prNumber, commitSha string) error
+}
+
+type CloudstorageClient interface {
+	WriteToGCSBucket(bucketName, objectName, filePath string) error
+	DownloadFile(bucket, object, filePath string) error
+}
+
+type TeamcityClient interface {
+	GetBuilds(params url.Values) (teamcity.Builds, error)
+	GetTestResults(build teamcity.Build) (teamcity.TestResults, error)
 }
 
 type ExecRunner interface {
@@ -47,7 +64,9 @@ type ExecRunner interface {
 	RemoveAll(path string) error
 	PushDir(path string) error
 	PopDir() error
+	ReadFile(name string) (string, error)
 	WriteFile(name, data string) error
+	AppendFile(name, data string) error // Not used (yet).
 	Run(name string, args []string, env map[string]string) (string, error)
 	MustRun(name string, args []string, env map[string]string) string
 }

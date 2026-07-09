@@ -89,10 +89,9 @@ resource "google_compute_instance_group_manager" "appserver" {
 }
 ```
 
-## Example Usage with standby policy (`google-beta` provider)
+## Example Usage with standby policy (`google` provider)
 ```hcl
 resource "google_compute_instance_group_manager" "igm-sr" {
-  provider = google-beta
   name = "tf-sr-igm"
 
   base_instance_name        = "tf-sr-igm-instance"
@@ -111,6 +110,62 @@ resource "google_compute_instance_group_manager" "igm-sr" {
   }
   target_suspended_size         = 2
   target_stopped_size           = 1
+}
+```
+
+## Example Usage with resource policies (`google` provider)
+```hcl
+data "google_compute_image" "my_image" {
+  family  = "debian-11"
+  project = "debian-cloud"
+}
+
+resource "google_compute_resource_policy" "workload_policy" {
+  name   = "tf-test-gce-policy"
+  region = "us-central1"
+  workload_policy {
+    type = "HIGH_THROUGHPUT"
+  }
+}
+
+resource "google_compute_instance_template" "igm-basic" {
+  name           = "igm-instance-template"
+  machine_type   = "a4-highgpu-8g"
+  can_ip_forward = false
+  tags           = ["foo", "bar"]
+
+  disk {
+    source_image = data.google_compute_image.my_image.self_link
+    auto_delete  = true
+    boot         = true
+    disk_type    = "hyperdisk-balanced"
+  }
+
+  network_interface {
+    network = "default"
+  }
+
+  service_account {
+    scopes = ["userinfo-email", "compute-ro", "storage-ro"]
+  }
+}
+
+resource "google_compute_instance_group_manager" "igm-workload-policy" {
+  description = "Terraform test instance group manager"
+  name        = "igm-basic-workload-policy"
+
+  version {
+    name              = "prod"
+    instance_template = google_compute_instance_template.igm-basic.self_link
+  }
+
+  base_instance_name = "tf-test-igm-no-tp"
+  zone               = "us-central1-b"
+  target_size        = 0
+
+  resource_policies {
+    workload_policy = google_compute_resource_policy.workload_policy.self_link
+  }
 }
 ```
 
@@ -183,11 +238,11 @@ group. You can specify only one value. Structure is [documented below](#nested_a
   allInstancesConfig on the group, you must update the group's instances to
   apply the configuration.
 
-* `standby_policy` - (Optional [Beta](https://terraform.io/docs/providers/google/guides/provider_versions.html)) The standby policy for stopped and suspended instances. Structure is documented below. For more information, see the [official documentation](https://cloud.google.com/compute/docs/instance-groups/suspended-and-stopped-vms-in-mig) and [API](https://cloud.google.com/compute/docs/reference/rest/beta/regionInstanceGroupManagers/patch)
+* `standby_policy` - (Optional) The standby policy for stopped and suspended instances. Structure is documented below. For more information, see the [official documentation](https://cloud.google.com/compute/docs/instance-groups/suspended-and-stopped-vms-in-mig).
 
-* `target_suspended_size` - (Optional [Beta](https://terraform.io/docs/providers/google/guides/provider_versions.html)) The target number of suspended instances for this managed instance group.
+* `target_suspended_size` - (Optional) The target number of suspended instances for this managed instance group.
 
-* `target_stopped_size` - (Optional [Beta](https://terraform.io/docs/providers/google/guides/provider_versions.html)) The target number of stopped instances for this managed instance group.
+* `target_stopped_size` - (Optional) The target number of stopped instances for this managed instance group.
 
 * `stateful_disk` - (Optional) Disks created on the instances that will be preserved on instance delete, update, etc. Structure is [documented below](#nested_stateful_disk). For more information see the [official documentation](https://cloud.google.com/compute/docs/instance-groups/configuring-stateful-disks-in-migs).
 
@@ -197,7 +252,18 @@ group. You can specify only one value. Structure is [documented below](#nested_a
 
 * `update_policy` - (Optional) The update policy for this managed instance group. Structure is [documented below](#nested_update_policy). For more information, see the [official documentation](https://cloud.google.com/compute/docs/instance-groups/updating-managed-instance-groups) and [API](https://cloud.google.com/compute/docs/reference/rest/v1/instanceGroupManagers/patch).
 
-* `params` - (Optional [Beta](https://terraform.io/docs/providers/google/guides/provider_versions.html)) Input only additional params for instance group manager creation. Structure is [documented below](#nested_params). For more information, see [API](https://cloud.google.com/compute/docs/reference/rest/beta/instanceGroupManagers/insert).
+* `params` - (Optional [Beta](../guides/provider_versions.html.markdown)) Input only additional params for instance group manager creation. Structure is [documented below](#nested_params). For more information, see [API](https://cloud.google.com/compute/docs/reference/rest/beta/instanceGroupManagers/insert).
+
+* `resource_policies` - (Optional) Resource policies for this managed instance group. Structure is [documented below](#nested_resource_policies).
+
+* `target_size_policy` - (Optional) The policy that specifies how the MIG creates its VMs to achieve the target size. Structure is [documented below](#nested_target_size_policy).
+
+* `deletion_policy` - (Optional) Whether Terraform will be prevented from destroying the resource. Defaults to "DELETE".
+    When a 'terraform destroy' or 'terraform apply' would delete the resource,
+    the command will fail if this field is set to "PREVENT" in Terraform state.
+    When set to "ABANDON", the command will remove the resource from Terraform
+    management without updating or deleting the resource in the API.
+    When set to "DELETE", deleting the resource is allowed.
 
 - - -
 
@@ -235,7 +301,7 @@ update_policy {
 
 * `max_unavailable_percent` - (Optional), Specifies a percentage of instances between 0 to 100%, inclusive. For example, specify 80 for 80%..
 
-* `min_ready_sec` - (Optional, [Beta](https://terraform.io/docs/providers/google/guides/provider_versions.html)), Minimum number of seconds to wait for after a newly created instance becomes available. This value must be from range [0, 3600]
+* `min_ready_sec` - (Optional, [Beta](../guides/provider_versions.html.markdown)), Minimum number of seconds to wait for after a newly created instance becomes available. This value must be from range [0, 3600]
 
 * `replacement_method` - (Optional), The instance replacement method for managed instance groups. Valid values are: "RECREATE", "SUBSTITUTE". If SUBSTITUTE (default), the group replaces VM instances with new instances that have randomly generated names. If RECREATE, instance names are preserved.  You must also set max_unavailable_fixed or max_unavailable_percent to be greater than 0.
 - - -
@@ -246,11 +312,29 @@ update_policy {
 instance_lifecycle_policy {
   force_update_on_repair    = "YES"
   default_action_on_failure = "DO_NOTHING"
+  on_failed_health_check    = "DO_NOTHING"
+  on_repair {
+    allow_changing_zone      = "YES"
+  }
 }
 ```
 
 * `force_update_on_repair` - (Optional), Specifies whether to apply the group's latest configuration when repairing a VM. Valid options are: `YES`, `NO`. If `YES` and you updated the group's instance template or per-instance configurations after the VM was created, then these changes are applied when VM is repaired. If `NO` (default), then updates are applied in accordance with the group's update policy type.
-* `default_action_on_failure` - (Optional), Default behavior for all instance or health check failures. Valid options are: `REPAIR`, `DO_NOTHING`. If `DO_NOTHING` then instances will not be repaired. If `REPAIR` (default), then failed instances will be repaired.
+* `default_action_on_failure` - (Optional), Specifies the action that a MIG performs on a failed VM. If the value of the `on_failed_health_check` field is `DEFAULT_ACTION`, then the same action also applies to the VMs on which your application fails a health check. Valid options are: `DO_NOTHING`, `REPAIR`. If `DO_NOTHING`, then MIG does not repair a failed VM. If `REPAIR` (default), then MIG automatically repairs a failed VM by recreating it. For more information, see about repairing VMs in a MIG.
+* `on_failed_health_check` - (Optional), Specifies the action that a MIG performs on an unhealthy VM. A VM is marked as unhealthy when the application running on that VM fails a health check. Valid options are: `DEFAULT_ACTION`, `DO_NOTHING`, `REPAIR`. If `DEFAULT_ACTION` (default), then MIG uses the same action configured for the  `default_action_on_failure` field. If `DO_NOTHING`, then MIG does not repair unhealthy VM. If `REPAIR`, then MIG automatically repairs an unhealthy VM by recreating it. For more information, see about repairing VMs in a MIG.
+* `on_repair` - (Optional), Configuration for VM repairs in the MIG. Structure is [documented below](#nested_on_repair).
+- - -
+
+<a name="nested_on_repair"></a>The `on_repair` block supports:
+
+```hcl
+on_repair {
+  allow_changing_zone      = "NO"
+}
+```
+
+* `allow_changing_zone` - (Optional), Specifies whether the MIG can change a VM's zone during a repair. If "YES", MIG can select a different zone for the VM during a repair. Else if "NO", MIG cannot change a VM's zone during a repair. The default value of allow_changing_zone is "NO".
+
 - - -
 
 <a name="nested_all_instances_config"></a>The `all_instances_config` block supports:
@@ -310,9 +394,9 @@ version {
 }
 ```
 
-* `name` - (Required) - Version name.
-
 * `instance_template` - (Required) - The full URL to an instance template from which all new instances of this version will be created. It is recommended to reference instance templates through their unique id (`self_link_unique` attribute).
+
+* `name` - (Optional) - Version name.
 
 * `target_size` - (Optional) - The number of instances calculated as a fixed number or a percentage depending on the settings. Structure is [documented below](#nested_target_size).
 
@@ -356,6 +440,16 @@ params{
 ```
 
 * `resource_manager_tags` - (Optional) Resource manager tags to bind to the managed instance group. The tags are key-value pairs. Keys must be in the format tagKeys/123 and values in the format tagValues/456. For more information, see [Manage tags for resources](https://cloud.google.com/compute/docs/tag-resources)
+
+- - -
+
+<a name="nested_resource_policies"></a>The `resource_policies` block supports:
+
+* `workload_policy` - (Optional) The URL of the workload policy that is specified for this managed instance group. It can be a full or partial URL.
+
+<a name="nested_target_size_policy"></a>The `target_size_policy` block supports:
+
+* `mode` - (Required)The mode of target size policy based on which the MIG creates its VMs individually or all at once. Values: "BULK", "INDIVIDUAL".
 
 ## Attributes Reference
 

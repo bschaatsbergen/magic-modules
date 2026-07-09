@@ -5,6 +5,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-provider-google/google/acctest"
+	_ "github.com/hashicorp/terraform-provider-google/google/services/identityplatform"
 )
 
 func TestAccIdentityPlatformOauthIdpConfig_identityPlatformOauthIdpConfigUpdate(t *testing.T) {
@@ -48,6 +49,10 @@ resource "google_identity_platform_oauth_idp_config" "oauth_idp_config" {
   issuer        = "issuer"
   enabled       = true
   client_secret = "secret"
+  response_type {
+    id_token = false
+    code = true
+  }
 }
 `, context)
 }
@@ -61,6 +66,10 @@ resource "google_identity_platform_oauth_idp_config" "oauth_idp_config" {
   issuer        = "different-issuer"
   enabled       = false
   client_secret = "secret2"
+  response_type {
+    id_token = true
+    code = false
+  }
 }
 `, context)
 }

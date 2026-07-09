@@ -11,9 +11,12 @@ import (
 	crmv3 "google.golang.org/api/cloudresourcemanager/v3"
 	"google.golang.org/api/storage/v1"
 
-	resources "github.com/GoogleCloudPlatform/terraform-google-conversion/v5/tfplan2cai/converters/google/resources"
+	resources "github.com/GoogleCloudPlatform/terraform-google-conversion/v7/tfplan2cai/converters/google/resources"
+	"github.com/hashicorp/terraform-provider-google-beta/google-beta/services/resourcemanagerv3"
+	storage_tpg "github.com/hashicorp/terraform-provider-google-beta/google-beta/services/storage"
 	"github.com/hashicorp/terraform-provider-google-beta/google-beta/tpgresource"
 	transport_tpg "github.com/hashicorp/terraform-provider-google-beta/google-beta/transport"
+	rmClient "github.com/hashicorp/terraform-provider-google/google/services/resourcemanager/client"
 
 	"go.uber.org/zap"
 )
@@ -58,9 +61,9 @@ func New(cfg *transport_tpg.Config, offline bool, entries map[string]string, err
 		errorLogger:   errorLogger,
 	}
 	if !offline {
-		am.resourceManagerV1 = cfg.NewResourceManagerClient(cfg.UserAgent)
-		am.resourceManagerV3 = cfg.NewResourceManagerV3Client(cfg.UserAgent)
-		am.storageClient = cfg.NewStorageClient(cfg.UserAgent)
+		am.resourceManagerV1 = rmClient.NewClient(cfg, cfg.UserAgent)
+		am.resourceManagerV3 = resourcemanagerv3.NewClient(cfg, cfg.UserAgent)
+		am.storageClient = storage_tpg.NewClient(cfg, cfg.UserAgent)
 	}
 	err := am.initAncestryCache(entries)
 	if err != nil {
@@ -162,15 +165,6 @@ func (m *manager) fetchAncestors(config *transport_tpg.Config, tfData tpgresourc
 			return nil, fmt.Errorf("organization id not found in terraform data")
 		}
 		key = orgKey
-	case "iam.googleapis.com/Role":
-		// google_organization_iam_custom_role or google_project_iam_custom_role
-		if orgOK {
-			key = orgKey
-		} else if projectKey != "" {
-			key = projectKey
-		} else {
-			return []string{unknownOrg}, nil
-		}
 	case "cloudresourcemanager.googleapis.com/Project", "cloudbilling.googleapis.com/ProjectBillingInfo":
 		// for google_project and google_project_iam resources
 		var ancestors []string
@@ -205,10 +199,16 @@ func (m *manager) fetchAncestors(config *transport_tpg.Config, tfData tpgresourc
 		key = projectKey
 
 	default:
-		if projectKey == "" {
+		switch {
+		case orgOK:
+			key = orgKey
+		case folderOK:
+			key = folderKey
+		case projectKey != "":
+			key = projectKey
+		default:
 			return []string{unknownOrg}, nil
 		}
-		key = projectKey
 	}
 	return m.getAncestorsWithCache(key)
 }
@@ -364,7 +364,7 @@ func (m *manager) getProjectFromResource(d tpgresource.TerraformResourceData, co
 		m.errorLogger.Warn(fmt.Sprintf("Failed to retrieve project_id for %s from cai resource", cai.Name))
 
 		bucketField, ok := d.GetOk("bucket")
-		if ok {
+		if ok && m.storageClient != nil {
 			bucket := bucketField.(string)
 			resp, err := m.storageClient.Buckets.Get(bucket).Do()
 			if err == nil {

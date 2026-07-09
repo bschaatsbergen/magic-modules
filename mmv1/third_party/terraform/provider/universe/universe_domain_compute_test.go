@@ -11,6 +11,7 @@ import (
 
 	"github.com/hashicorp/terraform-provider-google/google/acctest"
 	"github.com/hashicorp/terraform-provider-google/google/envvar"
+	"github.com/hashicorp/terraform-provider-google/google/services/compute"
 	"github.com/hashicorp/terraform-provider-google/google/tpgresource"
 	transport_tpg "github.com/hashicorp/terraform-provider-google/google/transport"
 )
@@ -26,8 +27,33 @@ func TestAccUniverseDomainDisk(t *testing.T) {
 		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
 		CheckDestroy:             testAccCheckComputeDiskDestroyProducer(t),
 		Steps: []resource.TestStep{
-			resource.TestStep{
+			{
 				Config: testAccUniverseDomain_basic_disk(universeDomain),
+			},
+		},
+	})
+}
+
+func TestAccUniverseDomainDiskImage(t *testing.T) {
+
+	universeDomain := envvar.GetTestUniverseDomainFromEnv(t)
+	zone := envvar.GetTestZoneFromEnv()
+	prefix := envvar.GetUniverseProjectPrefixFromEnv()
+	image_project := ""
+
+	if prefix != "" {
+		image_project = prefix + ":debian-cloud"
+	} else {
+		image_project = "debian-cloud"
+	}
+
+	acctest.VcrTest(t, resource.TestCase{
+		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
+		CheckDestroy:             testAccCheckComputeDiskDestroyProducer(t),
+		Steps: []resource.TestStep{
+			{
+				Config: testAccUniverseDomain_basic_disk_image(universeDomain, zone, image_project),
 			},
 		},
 	})
@@ -41,7 +67,7 @@ func TestAccDefaultUniverseDomainDisk(t *testing.T) {
 		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
 		CheckDestroy:             testAccCheckComputeDiskDestroyProducer(t),
 		Steps: []resource.TestStep{
-			resource.TestStep{
+			{
 				Config: testAccUniverseDomain_basic_disk(universeDomain),
 			},
 		},
@@ -55,7 +81,7 @@ func TestAccDefaultUniverseDomain_doesNotMatchExplicit(t *testing.T) {
 		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
 		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
 		Steps: []resource.TestStep{
-			resource.TestStep{
+			{
 				Config:      testAccUniverseDomain_basic_disk(universeDomainFake),
 				ExpectError: regexp.MustCompile("Universe domain mismatch"),
 			},
@@ -85,6 +111,28 @@ resource "google_compute_instance_template" "instance_template" {
 `, universeDomain)
 }
 
+func testAccUniverseDomain_basic_disk_image(universeDomain, zone, image_project string) string {
+	return fmt.Sprintf(`
+provider "google" {
+  universe_domain = "%s"
+}
+
+data "google_compute_images" "debian" {
+  project     = "%s"
+  filter      = "name=debian-12*"
+}
+
+resource "google_compute_disk" "primary" {
+  name  = "async-test-disk"
+  type  = "pd-ssd"
+  zone  = "%s"
+
+  physical_block_size_bytes = 4096
+  image = "projects/%s/global/images/${data.google_compute_images.debian.images[0].name}"
+}
+`, universeDomain, image_project, zone, image_project)
+}
+
 func testAccCheckComputeDiskDestroyProducer(t *testing.T) func(s *terraform.State) error {
 	return func(s *terraform.State) error {
 		for name, rs := range s.RootModule().Resources {
@@ -97,7 +145,7 @@ func testAccCheckComputeDiskDestroyProducer(t *testing.T) func(s *terraform.Stat
 
 			config := acctest.GoogleProviderConfig(t)
 
-			url, err := tpgresource.ReplaceVarsForTest(config, rs, "{{ComputeBasePath}}projects/{{project}}/zones/{{zone}}/disks/{{name}}")
+			url, err := tpgresource.ReplaceVarsForTest(config, rs, transport_tpg.BaseUrl(compute.Product, config)+"projects/{{project}}/zones/{{zone}}/disks/{{name}}")
 			if err != nil {
 				return err
 			}

@@ -9,22 +9,24 @@ description: |-
 Allows creation and management of a Google Cloud Platform project.
 
 Projects created with this resource must be associated with an Organization.
-See the [Organization documentation](https://cloud.google.com/resource-manager/docs/quickstarts) for more details.
+See the [Organization documentation](https://docs.cloud.google.com/resource-manager/docs/quickstarts) for more details.
 
 The user or service account that is running Terraform when creating a `google_project`
 resource must have `roles/resourcemanager.projectCreator` on the specified organization. See the
-[Access Control for Organizations Using IAM](https://cloud.google.com/resource-manager/docs/access-control-org)
+[Access Control for Organizations Using IAM](https://docs.cloud.google.com/resource-manager/docs/access-control-org)
 doc for more information.
 
 ~> This resource reads the specified billing account on every terraform apply and plan operation so you must have permissions on the specified billing account.
 
 ~> It is recommended to use the `constraints/compute.skipDefaultNetworkCreation` [constraint](/docs/providers/google/r/google_organization_policy.html) to remove the default network instead of setting `auto_create_network` to false, when possible.
 
+~> It may take a while for the attached tag bindings to be deleted after the project is scheduled to be deleted. 
+
 To get more information about projects, see:
 
-* [API documentation](https://cloud.google.com/resource-manager/reference/rest/v1/projects)
+* [API documentation](https://docs.cloud.google.com/resource-manager/reference/rest/v1/projects)
 * How-to Guides
-    * [Creating and managing projects](https://cloud.google.com/resource-manager/docs/creating-managing-projects)
+    * [Creating and managing projects](https://docs.cloud.google.com/resource-manager/docs/creating-managing-projects)
 
 ## Example Usage
 
@@ -48,6 +50,17 @@ resource "google_project" "my_project-in-a-folder" {
 resource "google_folder" "department1" {
   display_name = "Department 1"
   parent       = "organizations/1234567"
+}
+```
+
+To create a project with a tag
+
+```hcl
+resource "google_project" "my_project" {
+  name       = "My Project"
+  project_id = "your-project-id"
+  org_id     = "1234567"
+  tags = {"1234567/env":"staging"}
 }
 ```
 
@@ -99,6 +112,8 @@ The following arguments are supported:
    against any destroy actions caused by a terraform apply or terraform destroy. Setting ABANDON allows the resource 
    to be abandoned rather than deleted, i.e., the Terraform resource can be deleted without deleting the Project via 
    the Google API. Possible values are: "PREVENT", "ABANDON", "DELETE". Default value is `PREVENT`.
+
+* `tags` - (Optional) A map of resource manager tags. Resource manager tag keys and values have the same definition as resource manager tags. Keys must be in the format tagKeys/{tag_key_id}, and values are in the format tagValues/456. The field is ignored when empty. The field is immutable and causes resource replacement when mutated. This field is only set at create time and modifying this field after creation will trigger recreation. To apply tags to an existing resource, see the `google_tags_tag_value` resource.
 
 ## Attributes Reference
 

@@ -4,11 +4,11 @@ description: |-
   Contains information about a GKEHub Feature Memberships.
 ---
 
-# google_gkehub_feature_membership
+# google_gke_hub_feature_membership
 
 Contains information about a GKEHub Feature Memberships. Feature Memberships configure GKEHub Features that apply to specific memberships rather than the project as a whole. The google_gke_hub is the Fleet API.
 
-## Example Usage - Config Management
+## Example Usage - Config Management with Git
 
 ```hcl
 resource "google_container_cluster" "cluster" {
@@ -40,8 +40,9 @@ resource "google_gke_hub_feature_membership" "feature_member" {
   feature = google_gke_hub_feature.feature.name
   membership = google_gke_hub_membership.membership.membership_id
   configmanagement {
-    version = "1.6.2"
+    version = "1.19.0"
     config_sync {
+      enabled = true
       git {
         sync_repo = "https://github.com/hashicorp/terraform"
       }
@@ -49,6 +50,7 @@ resource "google_gke_hub_feature_membership" "feature_member" {
   }
 }
 ```
+
 ## Example Usage - Config Management with OCI
 
 ```hcl
@@ -81,14 +83,112 @@ resource "google_gke_hub_feature_membership" "feature_member" {
   feature = google_gke_hub_feature.feature.name
   membership = google_gke_hub_membership.membership.membership_id
   configmanagement {
-    version = "1.15.1"
+    version = "1.19.0"
     config_sync {
+      enabled = true
       oci {
         sync_repo = "us-central1-docker.pkg.dev/sample-project/config-repo/config-sync-gke:latest"
         policy_dir = "config-connector"
         sync_wait_secs = "20"
         secret_type = "gcpserviceaccount"
         gcp_service_account_email = "sa@project-id.iam.gserviceaccount.com"
+      }
+    }
+  }
+}
+```
+
+
+## Example Usage - Config Management with Deployment Override
+
+```hcl
+resource "google_container_cluster" "cluster" {
+  name               = "my-cluster"
+  location           = "us-central1-a"
+  initial_node_count = 1
+}
+
+resource "google_gke_hub_membership" "membership" {
+  membership_id = "my-membership"
+  endpoint {
+    gke_cluster {
+      resource_link = "//container.googleapis.com/${google_container_cluster.cluster.id}"
+    }
+  }
+}
+
+resource "google_gke_hub_feature" "feature" {
+  name = "configmanagement"
+  location = "global"
+
+  labels = {
+    foo = "bar"
+  }
+}
+
+resource "google_gke_hub_feature_membership" "feature_member" {
+  location = "global"
+  feature = google_gke_hub_feature.feature.name
+  membership = google_gke_hub_membership.membership.membership_id
+  configmanagement {
+    version = "1.20.1"
+    config_sync {
+      enabled = true
+      deployment_overrides {
+        deployment_name       = "reconciler-manager"
+        deployment_namespace = "config-management-system"
+        containers {
+          container_name = "reconciler-manager"
+          cpu_request    = "100m"
+          memory_request = "64Mi"
+          cpu_limit      = "250m"
+          memory_limit   = "128Mi"
+        }
+      }
+    }
+  }
+}
+```
+
+## Example Usage - Config Management with Regional Membership
+
+```hcl
+resource "google_container_cluster" "cluster" {
+  name               = "my-cluster"
+  location           = "us-central1-a"
+  initial_node_count = 1
+}
+
+resource "google_gke_hub_membership" "membership" {
+  membership_id = "my-membership"
+  location      = "us-central1"
+  endpoint {
+    gke_cluster {
+      resource_link = "//container.googleapis.com/${google_container_cluster.cluster.id}"
+    }
+  }
+}
+
+resource "google_gke_hub_feature" "feature" {
+  name = "configmanagement"
+  location = "global"
+
+  labels = {
+    foo = "bar"
+  }
+}
+
+resource "google_gke_hub_feature_membership" "feature_member" {
+  location = "global"
+  feature = google_gke_hub_feature.feature.name
+  membership = google_gke_hub_membership.membership.membership_id
+  membership_location = google_gke_hub_membership.membership.location
+  configmanagement {
+    version = "1.19.0"
+    config_sync {
+      enabled = true
+      git {
+        sync_repo = "https://github.com/hashicorp/terraform"
       }
     }
   }
@@ -136,50 +236,6 @@ resource "google_gke_hub_feature_membership" "feature_member" {
   membership = google_gke_hub_membership.membership.membership_id
   mesh {
     management = "MANAGEMENT_AUTOMATIC"
-  }
-}
-```
-
-## Example Usage - Config Management with Regional Membership
-
-```hcl
-resource "google_container_cluster" "cluster" {
-  name               = "my-cluster"
-  location           = "us-central1-a"
-  initial_node_count = 1
-}
-
-resource "google_gke_hub_membership" "membership" {
-  membership_id = "my-membership"
-  location      = "us-central1"
-  endpoint {
-    gke_cluster {
-      resource_link = "//container.googleapis.com/${google_container_cluster.cluster.id}"
-    }
-  }
-}
-
-resource "google_gke_hub_feature" "feature" {
-  name = "configmanagement"
-  location = "global"
-
-  labels = {
-    foo = "bar"
-  }
-}
-
-resource "google_gke_hub_feature_membership" "feature_member" {
-  location = "global"
-  feature = google_gke_hub_feature.feature.name
-  membership = google_gke_hub_membership.membership.membership_id
-  membership_location = google_gke_hub_membership.membership.location
-  configmanagement {
-    version = "1.6.2"
-    config_sync {
-      git {
-        sync_repo = "https://github.com/hashicorp/terraform"
-      }
-    }
   }
 }
 ```
@@ -302,54 +358,77 @@ The following arguments are supported:
 * `project` -
   (Optional)
   The project of the feature
+
+* `deletion_policy` - (Optional) Whether Terraform will be prevented from destroying the resource. Defaults to "DELETE".
+    When a 'terraform destroy' or 'terraform apply' would delete the resource,
+    the command will fail if this field is set to "PREVENT" in Terraform state.
+    When set to "ABANDON", the command will remove the resource from Terraform
+    management without updating or deleting the resource in the API.
+    When set to "DELETE", deleting the resource is allowed.
   
 
 
 <a name="nested_configmanagement"></a>The `configmanagement` block supports:
-    
-* `binauthz` -
-  (Optional)
-  Binauthz configuration for the cluster. Structure is [documented below](#nested_binauthz).
-    
+
 * `config_sync` -
   (Optional)
   Config Sync configuration for the cluster. Structure is [documented below](#nested_config_sync).
-    
+
+* `management` -
+  (Optional)
+  Enables automatic Feature management. Set this field to MANAGEMENT_AUTOMATIC to enable Config Sync auto-upgrades,
+  and set this field to MANAGEMENT_MANUAL or MANAGEMENT_UNSPECIFIED to disable Config Sync auto-upgrades.
+  This field was introduced in Terraform version [5.41.0](https://github.com/hashicorp/terraform-provider-google/releases/tag/v5.41.0).
+
+* `version` -
+  (Optional)
+  Version of Config Sync installed.
+
 * `hierarchy_controller` -
   (Optional)
   Hierarchy Controller configuration for the cluster. Structure is [documented below](#nested_hierarchy_controller).
+  Configuring Hierarchy Controller through the configmanagement feature is no longer recommended.
+  Use open source Kubernetes [Hierarchical Namespace Controller (HNC)](https://github.com/kubernetes-sigs/hierarchical-namespaces) instead.
+  Follow the [instructions](https://cloud.google.com/kubernetes-engine/enterprise/config-sync/docs/how-to/migrate-hierarchy-controller)
+  to migrate from Hierarchy Controller to HNC.
     
 * `policy_controller` -
   (Optional)
   Policy Controller configuration for the cluster. Structure is [documented below](#nested_policy_controller).
-    
-* `version` -
-  (Optional)
-  Version of ACM installed.
-    
-<a name="nested_binauthz"></a>The `binauthz` block supports:
-    
-* `enabled` -
-  (Optional)
-  Whether binauthz is enabled in this cluster.
+  Configuring Policy Controller through the configmanagement feature is no longer recommended.
+  Use the policycontroller feature instead.
     
 <a name="nested_config_sync"></a>The `config_sync` block supports:
-    
+
+* `enabled` -
+  (Optional)
+  Whether Config Sync is enabled in the cluster. This field was introduced in Terraform version
+  [5.41.0](https://github.com/hashicorp/terraform-provider-google/releases/tag/v5.41.0), and
+  needs to be set to `true` explicitly to install Config Sync.
+
 * `git` -
   (Optional) Structure is [documented below](#nested_git).
 
 * `oci` -
-  (Optional) Supported from ACM versions 1.12.0 onwards. Structure is [documented below](#nested_oci).
+  (Optional) Supported from Config Sync versions 1.12.0 onwards. Structure is [documented below](#nested_oci).
   
   Use either `git` or `oci` config option.
 
 * `prevent_drift` -
   (Optional)
-  Supported from ACM versions 1.10.0 onwards. Set to true to enable the Config Sync admission webhook to prevent drifts. If set to "false", disables the Config Sync admission webhook and does not prevent drifts.
+  Supported from Config Sync versions 1.10.0 onwards. Set to `true` to enable the Config Sync admission webhook to prevent drifts. If set to `false`, disables the Config Sync admission webhook and does not prevent drifts.
     
 * `source_format` -
   (Optional)
   Specifies whether the Config Sync Repo is in "hierarchical" or "unstructured" mode.
+
+* `stop_syncing` -
+  (Optional)
+  Set to true to stop syncing configs for a single cluster. Default to false.
+
+* `deployment_overrides` -
+  (Optional)
+  The override configurations for the Config Sync Deployments. Structure is [documented below](#nested_deployment_overrides). The field is only available on Config Sync version 1.20.1 or later.
     
 <a name="nested_git"></a>The `git` block supports:
     
@@ -384,6 +463,42 @@ The following arguments are supported:
 * `sync_wait_secs` -
   (Optional)
   Period in seconds between consecutive syncs. Default: 15.
+
+<a name="nested_deployment_overrides"></a>The `deployment_overrides` block supports:
+
+* `deployment_name` -
+  (Optional)
+  The name of the Deployment.
+
+* `deployment_namespace` -
+  (Optional)
+  The namespace of the Deployment.
+
+* `containers` -
+  (Optional)
+  The override configurations for the containers in the Deployment. Structure is [documented below](#nested_deployment_overrides_containers).
+
+<a name="nested_deployment_overrides_containers"></a>The `containers` block supports:
+
+* `container_name` -
+  (Optional)
+  The name of the container.
+
+* `cpu_request` -
+  (Optional)
+  The CPU request of the container.
+
+* `memory_request` -
+  (Optional)
+  The memory request of the container.
+
+* `cpu_limit` -
+  (Optional)
+  The CPU limit of the container.
+
+* `memory_limit` -
+  (Optional)
+  The memory limit of the container.
 
 <a name="nested_oci"></a>The `oci` block supports:
     
@@ -425,7 +540,7 @@ The following arguments are supported:
     
 * `audit_interval_seconds` -
   (Optional)
-  Sets the interval for Policy Controller Audit Scans (in seconds). When set to 0, this disables audit functionality altogether.
+  Sets the interval for Policy Controller Audit Scans (in seconds). When set to 0, this disables audit functionality altogether. Defaults to 60
     
 * `enabled` -
   (Optional)

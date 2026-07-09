@@ -1,0 +1,275 @@
+package compute
+
+import (
+	{{- if ne $.TargetVersionName "ga" }}
+	"encoding/json"
+	{{- end }}
+	"errors"
+	{{- if ne $.TargetVersionName "ga" }}
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"reflect"
+	{{- end }}
+	"sort"
+
+{{ if eq $.TargetVersionName `ga` }}
+	"google.golang.org/api/compute/v1"
+{{- else }}
+	compute "google.golang.org/api/compute/v0.beta"
+{{- end }}
+
+	"github.com/hashicorp/terraform-provider-google/google/tpgresource"
+	transport_tpg "github.com/hashicorp/terraform-provider-google/google/transport"
+)
+
+// Since the google compute API uses optimistic locking, there is a chance
+// we need to resubmit our updated metadata. To do this, you need to provide
+// an update function that attempts to submit your metadata
+func MetadataRetryWrapper(update func() error) error {
+	return transport_tpg.MetadataRetryWrapper(update)
+}
+
+// MetadataUpdate merges the diff between oldMDMap and newMDMap into serverMD.
+// Keys present in oldMDMap but absent from newMDMap are removed from serverMD.
+// Keys present in newMDMap are inserted or overwritten in serverMD.
+// serverMD is modified in place.
+func MetadataUpdate(oldMDMap map[string]interface{}, newMDMap map[string]interface{}, serverMD map[string]interface{}) {
+	for key := range serverMD {
+		_, okOld := oldMDMap[key]
+		_, okNew := newMDMap[key]
+		if okOld && !okNew {
+			delete(serverMD, key)
+		}
+	}
+	for key, val := range newMDMap {
+		serverMD[key] = val.(string)
+	}
+}
+
+// BetaMetadataUpdate is equivalent to MetadataUpdate.
+func BetaMetadataUpdate(oldMDMap map[string]interface{}, newMDMap map[string]interface{}, serverMD map[string]interface{}) {
+	MetadataUpdate(oldMDMap, newMDMap, serverMD)
+}
+
+func expandComputeMetadata(m map[string]interface{}) []*compute.MetadataItems {
+	metadata := make([]*compute.MetadataItems, 0, len(m))
+	var keys []string
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	// Append new metadata to existing metadata
+	for _, key := range keys {
+		v := m[key].(string)
+		metadata = append(metadata, &compute.MetadataItems{
+			Key:   key,
+			Value: &v,
+		})
+	}
+
+	return metadata
+}
+
+func flattenMetadataBeta(metadata *compute.Metadata) map[string]string {
+	metadataMap := make(map[string]string)
+	if metadata == nil {
+		return metadataMap
+	}
+	for _, item := range metadata.Items {
+		if item == nil {
+			continue
+		}
+		if item.Value == nil {
+			metadataMap[item.Key] = ""
+		} else {
+			metadataMap[item.Key] = *item.Value
+		}
+	}
+	return metadataMap
+}
+
+// This function differs from flattenMetadataBeta only in that it takes
+// compute.metadata rather than compute.metadata as an argument. It should
+// be removed in favour of flattenMetadataBeta if/when all resources using it get
+// beta support.
+func FlattenMetadata(metadata *compute.Metadata) map[string]interface{} {
+	metadataMap := make(map[string]interface{})
+	if metadata == nil {
+		return metadataMap
+	}
+	for _, item := range metadata.Items {
+		if item == nil {
+			continue
+		}
+		if item.Value == nil {
+			metadataMap[item.Key] = ""
+		} else {
+			metadataMap[item.Key] = *item.Value
+		}
+	}
+	return metadataMap
+}
+
+// resourceInstanceMetadata builds the instance metadata as a JSON-shaped
+// map[string]interface{} mirroring the compute.Metadata API type (camelCase
+// keys: "items" -> [{"key", "value"}], "fingerprint"). Empty values are omitted
+// to mirror the Apiary struct's omitempty tags, so the marshaled request body is
+// byte-identical whether the map is sent directly or round-tripped through the
+// typed struct via resourceInstanceMetadataTyped.
+func resourceInstanceMetadata(d tpgresource.TerraformResourceData) (map[string]interface{}, error) {
+	m := map[string]interface{}{}
+	mdMap := d.Get("metadata").(map[string]interface{})
+	if v, ok := d.GetOk("metadata_startup_script"); ok && v.(string) != "" {
+		if w, ok := mdMap["startup-script"]; ok {
+			// metadata.startup-script could be from metadata_startup_script in the first place
+			if v != w {
+				return nil, errors.New("Cannot provide both metadata_startup_script and metadata.startup-script.")
+			}
+		}
+		mdMap["startup-script"] = v
+	}
+	if len(mdMap) > 0 {
+		items := make([]interface{}, 0, len(mdMap))
+		var keys []string
+		for k := range mdMap {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			v := mdMap[k].(string)
+			items = append(items, map[string]interface{}{
+				"key":   k,
+				"value": v,
+			})
+		}
+		m["items"] = items
+
+		// Set the fingerprint. If the metadata has never been set before
+		// then this will just be blank, in which case we omit it to mirror
+		// the compute.Metadata omitempty behaviour.
+		if fp := d.Get("metadata_fingerprint").(string); fp != "" {
+			m["fingerprint"] = fp
+		}
+	}
+
+	return m, nil
+}
+
+// resourceInstanceMetadataTyped adapts the map-based resourceInstanceMetadata
+// output to the typed *compute.Metadata still required by callers that build
+// Apiary request structs directly.
+func resourceInstanceMetadataTyped(d tpgresource.TerraformResourceData) (*compute.Metadata, error) {
+	mdMap, err := resourceInstanceMetadata(d)
+	if err != nil {
+		return nil, err
+	}
+	m := &compute.Metadata{}
+	if err := convertViaJSON(mdMap, m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+{{- if ne $.TargetVersionName "ga" }}
+
+func resourceInstancePartnerMetadata(d tpgresource.TerraformResourceData) (map[string]interface{}, error) {
+	result := make(map[string]interface{})
+	partnerMetadataMap := d.Get("partner_metadata").(map[string]interface{})
+	for key, value := range partnerMetadataMap {
+		var parsed map[string]interface{}
+		if err := json.Unmarshal([]byte(value.(string)), &parsed); err != nil {
+			return nil, err
+		}
+		result[key] = parsed
+	}
+	return result, nil
+}
+
+func resourceInstancePatchPartnerMetadata(d tpgresource.TerraformResourceData, currentPartnerMetadata map[string]interface{}) map[string]interface{} {
+	partnerMetadata, _ := resourceInstancePartnerMetadata(d)
+	for key := range currentPartnerMetadata {
+		if _, ok := partnerMetadata[key]; !ok {
+			partnerMetadata[key] = nil
+		}
+	}
+	return partnerMetadata
+}
+
+func flattenPartnerMetadata(partnerMetadata map[string]interface{}) (map[string]string, error) {
+	partnerMetadataMap := make(map[string]string)
+	for key, value := range partnerMetadata {
+		if value == nil {
+			continue
+		}
+		jsonString, err := json.Marshal(value)
+		if err != nil {
+			return nil, err
+		}
+		partnerMetadataMap[key] = string(jsonString)
+	}
+	return partnerMetadataMap, nil
+}
+
+// convertPartnerMetadataToCompute builds the partner metadata as a JSON-shaped
+// map[string]interface{} mirroring the compute.StructuredEntries API type (each
+// value is the parsed entries object, or an empty object for nil). The typed
+// adapter convertPartnerMetadataToComputeTyped round-trips this through
+// map[string]compute.StructuredEntries for callers that build Apiary structs.
+func convertPartnerMetadataToCompute(pm map[string]interface{}) (map[string]interface{}, error) {
+	result := make(map[string]interface{})
+	for key, value := range pm {
+		if value == nil {
+			result[key] = map[string]interface{}{}
+			continue
+		}
+		result[key] = value
+	}
+	return result, nil
+}
+
+// convertPartnerMetadataToComputeTyped adapts the map-based
+// convertPartnerMetadataToCompute output to the typed
+// map[string]compute.StructuredEntries still required by callers that build
+// Apiary request structs directly.
+func convertPartnerMetadataToComputeTyped(pm map[string]interface{}) (map[string]compute.StructuredEntries, error) {
+	pmMap, err := convertPartnerMetadataToCompute(pm)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]compute.StructuredEntries)
+	if err := convertViaJSON(pmMap, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func convertPartnerMetadataFromCompute(pm map[string]compute.StructuredEntries) map[string]interface{} {
+	result := make(map[string]interface{})
+	for key, value := range pm {
+		if value.Entries == nil {
+			result[key] = nil
+			continue
+		}
+		seBytes, err := json.Marshal(value)
+		if err != nil {
+			result[key] = nil
+			continue
+		}
+		var m map[string]interface{}
+		if err := json.Unmarshal(seBytes, &m); err != nil {
+			result[key] = nil
+			continue
+		}
+		result[key] = m
+	}
+	return result
+}
+func ComparePartnerMetadataDiff(_, old, new string, d *schema.ResourceData) bool {
+	var oldJson map[string]interface{}
+	var newJson map[string]interface{}
+	json.Unmarshal([]byte(old), &oldJson)
+	json.Unmarshal([]byte(new), &newJson)
+	if reflect.DeepEqual(oldJson, newJson) {
+		return true
+	}
+	return false
+}
+{{- end }}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-google/google/registry"
 	"github.com/hashicorp/terraform-provider-google/google/tpgresource"
 	transport_tpg "github.com/hashicorp/terraform-provider-google/google/transport"
 )
@@ -39,9 +40,35 @@ func dataSourceGoogleRedisInstanceRead(d *schema.ResourceData, meta interface{})
 	if err := tpgresource.SetDataSourceLabels(d); err != nil {
 		return err
 	}
+	// added to resolve a null value for reserved_ip_range. This was not getting populated due to the addtion of ignore_read
+	if err := SetDataSourceReservedIpRange(d); err != nil {
+		return err
+	}
 
 	if d.Id() == "" {
 		return fmt.Errorf("%s not found", id)
 	}
 	return nil
+}
+
+func SetDataSourceReservedIpRange(d *schema.ResourceData) error {
+	effectiveReservedIpRange := d.Get("effective_reserved_ip_range")
+	if effectiveReservedIpRange == nil {
+		return nil
+	}
+
+	if err := d.Set("reserved_ip_range", effectiveReservedIpRange); err != nil {
+		return fmt.Errorf("Error setting reserved_ip_range in data source: %s", err)
+	}
+
+	return nil
+}
+
+func init() {
+	registry.Schema{
+		Name:        "google_redis_instance",
+		ProductName: "redis",
+		Type:        registry.SchemaTypeDataSource,
+		Schema:      DataSourceGoogleRedisInstance(),
+	}.Register()
 }

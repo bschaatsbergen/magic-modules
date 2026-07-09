@@ -4,7 +4,7 @@ description: |-
   Get subnetworks within GCE.
 ---
 
-# google\_compute\_subnetworks
+# google_compute_subnetworks
 
 Get subnetworks within GCE.
 See [the official documentation](https://cloud.google.com/vpc/docs/subnets)
@@ -42,6 +42,7 @@ The following arguments are supported:
 * `ip_cidr_range` - The IP address range represented as a CIDR block.
 * `name` - The name of the subnetwork.
 * `network` - The self link of the parent network.
+* `network_self_link` - (Deprecated) The name of the parent network computed from `network` attribute. (deprecated and will be removed in a future major release. Use `network_name` instead.)
 * `network_name` - The name of the parent network computed from `network` attribute.
 * `private_ip_google_access` - Whether the VMs in the subnet can access Google services without assigned external IP addresses.
 * `self_link` - The self link of the subnetwork.

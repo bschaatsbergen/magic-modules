@@ -1,6 +1,3 @@
-// Copyright (c) HashiCorp, Inc.
-// SPDX-License-Identifier: MPL-2.0
-
 package netapp_test
 
 import (
@@ -9,6 +6,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 
 	"github.com/hashicorp/terraform-provider-google/google/acctest"
+	"github.com/hashicorp/terraform-provider-google/google/services/kms"
+	_ "github.com/hashicorp/terraform-provider-google/google/services/netapp"
 )
 
 func TestAccNetappkmsconfig_kmsConfigCreateExample_Update(t *testing.T) {
@@ -16,6 +15,7 @@ func TestAccNetappkmsconfig_kmsConfigCreateExample_Update(t *testing.T) {
 
 	context := map[string]interface{}{
 		"random_suffix": acctest.RandString(t, 10),
+		"kms_key_name":  kms.BootstrapKMSKeyWithPurposeInLocationAndName(t, "ENCRYPT_DECRYPT", "us-east4", "tf-bootstrap-netapp-kmsconfig-key2").CryptoKey.Name,
 	}
 
 	acctest.VcrTest(t, resource.TestCase{
@@ -46,42 +46,22 @@ func TestAccNetappkmsconfig_kmsConfigCreateExample_Update(t *testing.T) {
 }
 
 func testAccNetappkmsconfig_kmsConfigCreateExample_Full(context map[string]interface{}) string {
-	return acctest.Nprintf(`
-	resource "google_kms_key_ring" "keyring" {
-		name     = "tf-test-key-ring%{random_suffix}"
-		location = "us-east4"
-	}
-	  
-	resource "google_kms_crypto_key" "crypto_key" {
-		name            = "tf-test-crypto-name%{random_suffix}"
-		key_ring        = google_kms_key_ring.keyring.id
-	}
-	  
+	return acctest.Nprintf(` 
 	resource "google_netapp_kmsconfig" "kmsConfig" {
 		name = "tf-test-kms-test%{random_suffix}"
 		description="this is a test description"
-		crypto_key_name=google_kms_crypto_key.crypto_key.id
+		crypto_key_name="%{kms_key_name}"
 		location="us-east4"
 	}
 `, context)
 }
 
 func testAccNetappkmsconfig_kmsConfigCreateExample_Update(context map[string]interface{}) string {
-	return acctest.Nprintf(`
-	resource "google_kms_key_ring" "keyring" {
-		name     = "tf-test-key-ring%{random_suffix}"
-		location = "us-east4"
-	}
-	  
-	resource "google_kms_crypto_key" "crypto_key" {
-		name            = "tf-test-crypto-name%{random_suffix}"
-		key_ring        = google_kms_key_ring.keyring.id
-	}
-	  
+	return acctest.Nprintf(`  
 	resource "google_netapp_kmsconfig" "kmsConfig" {
 		name = "tf-test-kms-test%{random_suffix}"
 		description="kmsconfig update"
-		crypto_key_name=google_kms_crypto_key.crypto_key.id
+		crypto_key_name="%{kms_key_name}"
 		location="us-east4"
 		labels = {
 			"foo": "bar",

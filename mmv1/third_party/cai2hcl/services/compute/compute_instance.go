@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/GoogleCloudPlatform/terraform-google-conversion/v5/caiasset"
+	"github.com/GoogleCloudPlatform/terraform-google-conversion/v7/caiasset"
 
-	"github.com/GoogleCloudPlatform/terraform-google-conversion/v5/cai2hcl/common"
+	"github.com/GoogleCloudPlatform/terraform-google-conversion/v7/cai2hcl/common"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/zclconf/go-cty/cty"
 	"google.golang.org/api/compute/v1"
@@ -120,6 +120,7 @@ func (c *ComputeInstanceConverter) convertResourceData(asset *caiasset.Asset) (*
 	hclData["enable_display"] = flattenEnableDisplay(instance.DisplayDevice)
 	hclData["metadata_fingerprint"] = instance.Metadata.Fingerprint
 	hclData["metadata"] = convertMetadata(instance.Metadata)
+	hclData["reservation_affinity"] = flattenReservationAffinity(instance.ReservationAffinity)
 
 	if instance.Zone == "" {
 		hclData["zone"] = common.ParseFieldValue(asset.Name, "zones")
@@ -218,6 +219,9 @@ func convertScheduling(sched *compute.Scheduling) []map[string]interface{} {
 	}
 	if len(sched.ProvisioningModel) > 0 {
 		data["provisioning_model"] = sched.ProvisioningModel
+	}
+	if sched.AvailabilityDomain > 0 {
+		data["availability_domain"] = sched.AvailabilityDomain
 	}
 	return []map[string]interface{}{data}
 }
@@ -372,4 +376,25 @@ func flattenScratchDisk(disk *compute.AttachedDisk) map[string]interface{} {
 		"interface": disk.Interface,
 	}
 	return result
+}
+
+func flattenReservationAffinity(res *compute.ReservationAffinity) []map[string]interface{} {
+	if res == nil {
+		return nil
+	}
+
+	affinity := map[string]interface{}{
+		"type": res.ConsumeReservationType,
+	}
+
+	if res.Key != "" || len(res.Values) > 0 {
+		affinity["specific_reservation"] = []map[string]interface{}{
+			{
+				"key":    res.Key,
+				"values": res.Values,
+			},
+		}
+	}
+
+	return []map[string]interface{}{affinity}
 }

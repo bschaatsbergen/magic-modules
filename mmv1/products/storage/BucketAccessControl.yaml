@@ -1,4 +1,4 @@
-# Copyright 2023 Google Inc.
+# Copyright 2024 Google Inc.
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -11,16 +11,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
---- !ruby/object:Api::Resource
-name: 'BucketAccessControl'
-kind: 'storage#bucketAccessControl'
-base_url: b/{{bucket}}/acl
-self_link: b/{{bucket}}/acl/{{entity}}
-collection_url_key: items
-references: !ruby/object:Api::Resource::ReferenceLinks
-  guides:
-    'Official Documentation': 'https://cloud.google.com/storage/docs/access-control/lists'
-  api: 'https://cloud.google.com/storage/docs/json_api/v1/bucketAccessControls'
+---
+name: BucketAccessControl
 description: |
   Bucket ACLs can be managed authoritatively using the
   [`storage_bucket_acl`](https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/storage_bucket_acl)
@@ -39,36 +31,47 @@ description: |
   and call all BucketAccessControls methods on the bucket.  For more
   information, see Access Control, with the caveat that this API uses
   READER, WRITER, and OWNER instead of READ, WRITE, and FULL_CONTROL.
+references:
+  guides:
+    Official Documentation: https://cloud.google.com/storage/docs/access-control/lists
+  api: https://cloud.google.com/storage/docs/json_api/v1/bucketAccessControls
+base_url: b/{{bucket}}/acl
+self_link: b/{{bucket}}/acl/{{entity}}
+collection_url_key: items
 identity:
   - entity
-examples:
-  - !ruby/object:Provider::Terraform::Examples
-    name: 'storage_bucket_access_control_public_bucket'
-    primary_resource_id: 'public_rule'
-    vars:
-      bucket_name: 'static-content-bucket'
+kind: storage#bucketAccessControl
 id_format: '{{bucket}}/{{entity}}'
-import_format: ['{{bucket}}/{{entity}}']
-mutex: 'storage/buckets/{{bucket}}'
-skip_sweeper: true
+import_format:
+  - '{{bucket}}/{{entity}}'
+mutex: storage/buckets/{{bucket}}
+exclude_sweeper: true
+samples:
+  - name: storage_bucket_access_control_public_bucket
+    primary_resource_id: public_rule
+    steps:
+      - name: storage_bucket_access_control_public_bucket
+        resource_id_vars:
+          bucket_name: static-content-bucket
 properties:
-  - !ruby/object:Api::Type::ResourceRef
-    name: 'bucket'
-    resource: 'Bucket'
-    imports: 'name'
-    description: 'The name of the bucket.'
+  - name: bucket
+    type: ResourceRef
     required: true
+    description: The name of the bucket.
     immutable: true
-  - !ruby/object:Api::Type::String
-    name: 'domain'
-    description: 'The domain associated with the entity.'
+    resource: Bucket
+    imports: name
+  - name: domain
+    type: String
+    description: The domain associated with the entity.
     output: true
-  - !ruby/object:Api::Type::String
-    name: 'email'
-    description: 'The email address associated with the entity.'
+  - name: email
+    type: String
+    description: The email address associated with the entity.
     output: true
-  - !ruby/object:Api::Type::String
-    name: 'entity'
+  - name: entity
+    type: String
+    required: true
     description: |
       The entity holding the permission, in one of the following forms:
         user-userId
@@ -85,12 +88,11 @@ properties:
         group-example@googlegroups.com.
         To refer to all members of the Google Apps for Business domain
         example.com, the entity would be domain-example.com.
-    required: true
     immutable: true
-  - !ruby/object:Api::Type::Enum
-    name: 'role'
-    description: 'The access permission for the entity.'
-    values:
-      - :OWNER
-      - :READER
-      - :WRITER
+  - name: role
+    type: Enum
+    description: The access permission for the entity.
+    enum_values:
+      - OWNER
+      - READER
+      - WRITER

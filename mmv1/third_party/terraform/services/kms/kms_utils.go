@@ -20,6 +20,24 @@ type KmsKeyRingId struct {
 	Name     string
 }
 
+type KmsKeyHandleId struct {
+	Project  string
+	Location string
+	Name     string
+}
+
+type KmsAutokeyConfigId struct {
+	Folder string
+}
+
+func (s *KmsAutokeyConfigId) AutokeyConfigId() string {
+	return fmt.Sprintf("%s/autokeyConfig", s.Folder)
+}
+
+func (s *KmsKeyHandleId) KeyHandleId() string {
+	return fmt.Sprintf("projects/%s/locations/%s/keyHandles/%s", s.Project, s.Location, s.Name)
+}
+
 func (s *KmsKeyRingId) KeyRingId() string {
 	return fmt.Sprintf("projects/%s/locations/%s/keyRings/%s", s.Project, s.Location, s.Name)
 }
@@ -94,7 +112,7 @@ type kmsCryptoKeyVersionId struct {
 }
 
 func (s *kmsCryptoKeyVersionId) cryptoKeyVersionId() string {
-	return fmt.Sprintf(s.Name)
+	return s.Name
 }
 
 func (s *kmsCryptoKeyVersionId) TerraformId() string {
@@ -210,7 +228,7 @@ func parseKmsCryptoKeyVersionId(id string, config *transport_tpg.Config) (*kmsCr
 }
 
 func clearCryptoKeyVersions(cryptoKeyId *KmsCryptoKeyId, userAgent string, config *transport_tpg.Config) error {
-	versionsClient := config.NewKmsClient(userAgent).Projects.Locations.KeyRings.CryptoKeys.CryptoKeyVersions
+	versionsClient := NewClient(config, userAgent).Projects.Locations.KeyRings.CryptoKeys.CryptoKeyVersions
 
 	listCall := versionsClient.List(cryptoKeyId.CryptoKeyId())
 	if config.UserProjectOverride {
@@ -242,7 +260,7 @@ func clearCryptoKeyVersions(cryptoKeyId *KmsCryptoKeyId, userAgent string, confi
 }
 
 func deleteCryptoKeyVersions(cryptoKeyVersionId *kmsCryptoKeyVersionId, d *schema.ResourceData, userAgent string, config *transport_tpg.Config) error {
-	versionsClient := config.NewKmsClient(userAgent).Projects.Locations.KeyRings.CryptoKeys.CryptoKeyVersions
+	versionsClient := NewClient(config, userAgent).Projects.Locations.KeyRings.CryptoKeys.CryptoKeyVersions
 	request := &cloudkms.DestroyCryptoKeyVersionRequest{}
 	destroyCall := versionsClient.Destroy(cryptoKeyVersionId.Name, request)
 	if config.UserProjectOverride {
@@ -257,7 +275,7 @@ func deleteCryptoKeyVersions(cryptoKeyVersionId *kmsCryptoKeyVersionId, d *schem
 }
 
 func disableCryptoKeyRotation(cryptoKeyId *KmsCryptoKeyId, userAgent string, config *transport_tpg.Config) error {
-	keyClient := config.NewKmsClient(userAgent).Projects.Locations.KeyRings.CryptoKeys
+	keyClient := NewClient(config, userAgent).Projects.Locations.KeyRings.CryptoKeys
 	patchCall := keyClient.Patch(cryptoKeyId.CryptoKeyId(), &cloudkms.CryptoKey{
 		NullFields: []string{"rotationPeriod", "nextRotationTime"},
 	}).

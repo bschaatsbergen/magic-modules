@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"testing"
 	"time"
@@ -90,6 +91,10 @@ func SkipIfVcr(t *testing.T) {
 
 func SleepInSecondsForTest(t int) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
+		// Assume we never want to sleep when we're in replaying mode.
+		if IsVcrEnabled() && os.Getenv("VCR_MODE") == "REPLAYING" {
+			return nil
+		}
 		time.Sleep(time.Duration(t) * time.Second)
 		return nil
 	}
@@ -104,6 +109,21 @@ func TestCheckAttributeValuesEqual(i *string, j *string) resource.TestCheckFunc 
 
 		return nil
 	}
+}
+
+// ConditionTitleIfPresent returns empty string if condition is not preset and " {condition.0.title}" if it is.
+func BuildIAMImportId(name, role, member, condition string) string {
+	ret := name
+	if role != "" {
+		ret += " " + role
+	}
+	if member != "" {
+		ret += " " + member
+	}
+	if condition != "" {
+		ret += " " + condition
+	}
+	return ret
 }
 
 // testStringValue returns string values from string pointers, handling nil pointers.

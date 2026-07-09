@@ -9,6 +9,7 @@ import (
 	"github.com/hashicorp/terraform-provider-google/google/acctest"
 	"github.com/hashicorp/terraform-provider-google/google/envvar"
 	"github.com/hashicorp/terraform-provider-google/google/services/compute"
+	"github.com/hashicorp/terraform-provider-google/google/tpgresource"
 )
 
 func TestAccComputeAttachedDisk_basic(t *testing.T) {
@@ -162,12 +163,18 @@ func testCheckAttachedDiskIsNowDetached(t *testing.T, instanceName, diskName str
 	return func(s *terraform.State) error {
 		config := acctest.GoogleProviderConfig(t)
 
-		instance, err := config.NewComputeClient(config.UserAgent).Instances.Get(envvar.GetTestProjectFromEnv(), "us-central1-a", instanceName).Do()
+		instance, err := compute.NewClient(config, config.UserAgent).Instances.Get(envvar.GetTestProjectFromEnv(), "us-central1-a", instanceName).Do()
 		if err != nil {
 			return err
 		}
 
-		ad := compute.FindDiskByName(instance.Disks, diskName)
+		var ad interface{}
+		for _, disk := range instance.Disks {
+			if tpgresource.CompareSelfLinkOrResourceName("", disk.Source, diskName, nil) {
+				ad = disk
+				break
+			}
+		}
 		if ad != nil {
 			return fmt.Errorf("compute disk is still attached to compute instance")
 		}
@@ -180,7 +187,7 @@ func testCheckAttachedDiskContainsManyDisks(t *testing.T, instanceName string, c
 	return func(s *terraform.State) error {
 		config := acctest.GoogleProviderConfig(t)
 
-		instance, err := config.NewComputeClient(config.UserAgent).Instances.Get(envvar.GetTestProjectFromEnv(), "us-central1-a", instanceName).Do()
+		instance, err := compute.NewClient(config, config.UserAgent).Instances.Get(envvar.GetTestProjectFromEnv(), "us-central1-a", instanceName).Do()
 		if err != nil {
 			return err
 		}
@@ -314,4 +321,111 @@ resource "google_compute_attached_disk" "test" {
   instance = google_compute_instance.test.self_link
 }
 `, diskPrefix, count, instanceName)
+}
+
+func TestAccComputeAttachedDisk_diskInterface(t *testing.T) {
+	t.Parallel()
+
+	diskName1 := fmt.Sprintf("tf-test1-%d", acctest.RandInt(t))
+	diskName2 := fmt.Sprintf("tf-test2-%d", acctest.RandInt(t))
+	attachedDiskName1 := fmt.Sprintf("tf-test1-%d", acctest.RandInt(t))
+	attachedDiskName2 := fmt.Sprintf("tf-test2-%d", acctest.RandInt(t))
+	instanceName1 := fmt.Sprintf("tf-test1-%d", acctest.RandInt(t))
+	instanceName2 := fmt.Sprintf("tf-test2-%d", acctest.RandInt(t))
+	importID1 := fmt.Sprintf("%s/us-central1-a/%s/%s", envvar.GetTestProjectFromEnv(), instanceName1, diskName1)
+	importID2 := fmt.Sprintf("%s/us-central1-a/%s/%s", envvar.GetTestProjectFromEnv(), instanceName2, diskName2)
+	acctest.VcrTest(t, resource.TestCase{
+		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
+		CheckDestroy:             nil,
+		Steps: []resource.TestStep{
+			{
+				Config: testAttachedDiskResource(diskName1, instanceName1) + testAccComputeAttachedDisk_interface(attachedDiskName1, "SCSI"),
+			},
+			{
+				ResourceName:      "google_compute_attached_disk." + attachedDiskName1,
+				ImportStateId:     importID1,
+				ImportState:       true,
+				ImportStateVerify: false,
+			},
+			{
+				Config: testAttachedDiskResource(diskName1, instanceName1) + testAccComputeAttachedDisk_noInterface(attachedDiskName1),
+			},
+			{
+				ResourceName:      "google_compute_attached_disk." + attachedDiskName1,
+				ImportStateId:     importID1,
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+			{
+				Config: testAttachedDiskResource(diskName1, instanceName1) + testAccComputeAttachedDisk_interface(attachedDiskName1, "SCSI"),
+			},
+			{
+				ResourceName:      "google_compute_attached_disk." + attachedDiskName1,
+				ImportStateId:     importID1,
+				ImportState:       true,
+				ImportStateVerify: false,
+			},
+			// API server will use NVME even SCSI is specified
+			{
+				Config: testAttachedDiskResourceWithMachineType(diskName2, instanceName2, "h3-standard-88") + testAccComputeAttachedDisk_interface(attachedDiskName2, "SCSI"),
+			},
+			{
+				ResourceName:      "google_compute_attached_disk." + attachedDiskName2,
+				ImportStateId:     importID2,
+				ImportState:       true,
+				ImportStateVerify: false,
+			},
+		},
+	})
+
+}
+
+func testAccComputeAttachedDisk_interface(resourceName, diskInterface string) string {
+	return fmt.Sprintf(`
+resource "google_compute_attached_disk" "%s" {
+  disk     = google_compute_disk.test1.self_link
+  instance = google_compute_instance.test.self_link
+  interface = "%s"
+}
+`, resourceName, diskInterface)
+}
+
+func testAccComputeAttachedDisk_noInterface(resourceName string) string {
+	return fmt.Sprintf(`
+resource "google_compute_attached_disk" "%s" {
+  disk     = google_compute_disk.test1.self_link
+  instance = google_compute_instance.test.self_link
+}
+`, resourceName)
+}
+
+func testAttachedDiskResourceWithMachineType(diskName, instanceName, machineType string) string {
+	return fmt.Sprintf(`
+resource "google_compute_disk" "test1" {
+  name = "%s"
+  zone = "us-central1-a"
+  type = "hyperdisk-balanced"
+}
+
+resource "google_compute_instance" "test" {
+  name         = "%s"
+  machine_type = "%s"
+  zone         = "us-central1-a"
+
+  lifecycle {
+    ignore_changes = [attached_disk]
+  }
+
+  boot_disk {
+    initialize_params {
+      image = "debian-cloud/debian-11"
+    }
+  }
+
+  network_interface {
+    network = "default"
+  }
+}
+`, diskName, instanceName, machineType)
 }

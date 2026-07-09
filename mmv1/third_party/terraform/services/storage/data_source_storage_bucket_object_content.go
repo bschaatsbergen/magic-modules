@@ -1,10 +1,14 @@
 package storage
 
 import (
+	"crypto/sha512"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io/ioutil"
 	"net/http"
 
+	"github.com/hashicorp/terraform-provider-google/google/registry"
 	"github.com/hashicorp/terraform-provider-google/google/tpgresource"
 	transport_tpg "github.com/hashicorp/terraform-provider-google/google/transport"
 
@@ -18,7 +22,32 @@ func DataSourceGoogleStorageBucketObjectContent() *schema.Resource {
 
 	tpgresource.AddRequiredFieldsToSchema(dsSchema, "bucket")
 	tpgresource.AddRequiredFieldsToSchema(dsSchema, "name")
-	tpgresource.AddOptionalFieldsToSchema(dsSchema, "content")
+
+	// The field must be optional for backward compatibility.
+	dsSchema["content"].Optional = true
+	dsSchema["content_base64"] = &schema.Schema{
+		Type:        schema.TypeString,
+		Description: "Base64 encoded version of the object content. Use this when dealing with binary data.",
+		Computed:    true,
+		Optional:    false,
+		Required:    false,
+	}
+
+	dsSchema["content_hexsha512"] = &schema.Schema{
+		Type:        schema.TypeString,
+		Description: "Hex encoded SHA512 checksum of object content.",
+		Computed:    true,
+		Optional:    false,
+		Required:    false,
+	}
+
+	dsSchema["content_base64sha512"] = &schema.Schema{
+		Type:        schema.TypeString,
+		Description: "Base64 encoded SHA512 checksum of object content.",
+		Computed:    true,
+		Optional:    false,
+		Required:    false,
+	}
 
 	return &schema.Resource{
 		Read:   dataSourceGoogleStorageBucketObjectContentRead,
@@ -36,7 +65,7 @@ func dataSourceGoogleStorageBucketObjectContentRead(d *schema.ResourceData, meta
 	bucket := d.Get("bucket").(string)
 	name := d.Get("name").(string)
 
-	objectsService := storage.NewObjectsService(config.NewStorageClient(userAgent))
+	objectsService := storage.NewObjectsService(NewClient(config, userAgent))
 	getCall := objectsService.Get(bucket, name)
 
 	res, err := getCall.Download()
@@ -45,20 +74,42 @@ func dataSourceGoogleStorageBucketObjectContentRead(d *schema.ResourceData, meta
 	}
 
 	defer res.Body.Close()
-	var bodyString string
+	var objectBytes []byte
 
 	if res.StatusCode == http.StatusOK {
 		bodyBytes, err := ioutil.ReadAll(res.Body)
 		if err != nil {
 			return fmt.Errorf("Error reading all  from res.Body: %s", err)
 		}
-		bodyString = string(bodyBytes)
+		objectBytes = bodyBytes
 	}
 
-	if err := d.Set("content", bodyString); err != nil {
+	if err := d.Set("content", string(objectBytes)); err != nil {
 		return fmt.Errorf("Error setting content: %s", err)
+	}
+
+	if err := d.Set("content_base64", base64.StdEncoding.EncodeToString(objectBytes)); err != nil {
+		return fmt.Errorf("Error setting content_base64: %s", err)
+	}
+
+	sha512Sum := sha512.Sum512(objectBytes)
+	if err := d.Set("content_hexsha512", hex.EncodeToString(sha512Sum[:])); err != nil {
+		return fmt.Errorf("Error setting content_hexsha512: %s", err)
+	}
+
+	if err := d.Set("content_base64sha512", base64.StdEncoding.EncodeToString(sha512Sum[:])); err != nil {
+		return fmt.Errorf("Error setting content_base64sha512: %s", err)
 	}
 
 	d.SetId(bucket + "-" + name)
 	return nil
+}
+
+func init() {
+	registry.Schema{
+		Name:        "google_storage_bucket_object_content",
+		ProductName: "storage",
+		Type:        registry.SchemaTypeDataSource,
+		Schema:      DataSourceGoogleStorageBucketObjectContent(),
+	}.Register()
 }

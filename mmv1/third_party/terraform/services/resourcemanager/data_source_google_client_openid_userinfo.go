@@ -10,6 +10,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-provider-google/google/fwmodels"
 	"github.com/hashicorp/terraform-provider-google/google/fwtransport"
+	"github.com/hashicorp/terraform-provider-google/google/registry"
+	transport_tpg "github.com/hashicorp/terraform-provider-google/google/transport"
 )
 
 // Ensure the data source satisfies the expected interfaces.
@@ -18,12 +20,20 @@ var (
 	_ datasource.DataSourceWithConfigure = &GoogleClientOpenIDUserinfoDataSource{}
 )
 
+func init() {
+	registry.FrameworkDataSource{
+		Name:        "google_client_openid_userinfo",
+		ProductName: "resourcemanager",
+		Func:        NewGoogleClientOpenIDUserinfoDataSource,
+	}.Register()
+}
+
 func NewGoogleClientOpenIDUserinfoDataSource() datasource.DataSource {
 	return &GoogleClientOpenIDUserinfoDataSource{}
 }
 
 type GoogleClientOpenIDUserinfoDataSource struct {
-	providerConfig *fwtransport.FrameworkProviderConfig
+	providerConfig *transport_tpg.Config
 }
 
 type GoogleClientOpenIDUserinfoModel struct {
@@ -68,11 +78,11 @@ func (d *GoogleClientOpenIDUserinfoDataSource) Configure(ctx context.Context, re
 		return
 	}
 
-	p, ok := req.ProviderData.(*fwtransport.FrameworkProviderConfig)
+	p, ok := req.ProviderData.(*transport_tpg.Config)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Data Source Configure Type",
-			fmt.Sprintf("Expected *fwtransport.FrameworkProviderConfig, got: %T. Please report this issue to the provider developers.", req.ProviderData),
+			fmt.Sprintf("Expected *transport_tpg.Config, got: %T. Please report this issue to the provider developers.", req.ProviderData),
 		)
 		return
 	}
@@ -99,8 +109,11 @@ func (d *GoogleClientOpenIDUserinfoDataSource) Read(ctx context.Context, req dat
 	}
 
 	userAgent := fwtransport.GenerateFrameworkUserAgentString(metaData, d.providerConfig.UserAgent)
-	email := fwtransport.GetCurrentUserEmailFramework(d.providerConfig, userAgent, &diags)
-
+	email, err := transport_tpg.GetCurrentUserEmail(d.providerConfig, userAgent)
+	if err != nil {
+		diags.AddError("error retrieving userinfo for your provider credentials", err.Error())
+		return
+	}
 	data.Email = types.StringValue(email)
 	data.Id = types.StringValue(email)
 

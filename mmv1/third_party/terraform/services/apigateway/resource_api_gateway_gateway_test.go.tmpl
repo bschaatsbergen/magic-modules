@@ -1,0 +1,79 @@
+package apigateway_test
+{{- if ne $.TargetVersionName "ga" }}
+
+import (
+	"testing"
+	"github.com/hashicorp/terraform-provider-google/google/acctest"
+	_ "github.com/hashicorp/terraform-provider-google/google/services/apigateway"
+
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
+)
+
+func TestAccApiGatewayGateway_apigatewayGatewayBasicExampleUpdated(t *testing.T) {
+	t.Parallel()
+
+	randomSuffix := acctest.RandString(t, 10)
+
+	context := map[string]interface{}{
+		"api_id":        "tf-test-my-api" + randomSuffix,
+		"config_id":     "tf-test-my-config" + randomSuffix,
+		"gateway_id":    "tf-test-my-gateway" + randomSuffix,
+		"random_suffix": randomSuffix,
+	}
+
+	acctest.VcrTest(t, resource.TestCase{
+		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderBetaFactories(t),
+		CheckDestroy:             testAccCheckApiGatewayGatewayDestroyProducer(t),
+		Steps: []resource.TestStep{
+			{
+				Config: testAccApiGatewayGateway_apigatewayGatewayBasicExample(context),
+			},
+			{
+				Config: testAccApiGatewayGateway_apigatewayGatewayBasicExampleUpdated(context),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction("google_api_gateway_gateway.api_gw", plancheck.ResourceActionUpdate),
+					},
+				},
+			},
+		},
+	})
+}
+
+func testAccApiGatewayGateway_apigatewayGatewayBasicExampleUpdated(context map[string]interface{}) string {
+	return acctest.Nprintf(`
+resource "google_api_gateway_api" "api_gw" {
+  provider = google-beta
+  api_id = "%{api_id}"
+}
+
+resource "google_api_gateway_api_config" "api_gw" {
+  provider = google-beta
+  api = google_api_gateway_api.api_gw.api_id
+  api_config_id = "%{config_id}"
+
+  openapi_documents {
+    document {
+      path = "spec.yaml"
+      contents = filebase64("test-fixtures/openapi.yaml")
+    }
+  }
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "google_api_gateway_gateway" "api_gw" {
+  provider = google-beta
+  api_config = google_api_gateway_api_config.api_gw.id
+  gateway_id = "%{gateway_id}"
+  display_name = "MM Dev API Gateway"
+  labels = {
+    environment = "dev"
+  }
+}
+`, context)
+}
+{{- end }}

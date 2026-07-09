@@ -1,0 +1,7 @@
+// Add force=true query param if deletion_policy is FORCE to delete child routes
+if deletionPolicy := d.Get("deletion_policy"); deletionPolicy == "FORCE" {
+	url, err = transport_tpg.AddQueryParams(url, map[string]string{"force": strconv.FormatBool(true)})
+	if err != nil {
+		return err
+	}
+}

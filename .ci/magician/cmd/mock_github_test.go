@@ -17,22 +17,30 @@ package cmd
 
 import (
 	"errors"
+	"fmt"
 
 	"magician/github"
 )
 
 type mockGithub struct {
-	pullRequest        github.PullRequest
-	userType           github.UserType
-	requestedReviewers []github.User
-	previousReviewers  []github.User
-	teamMembers        map[string][]github.User
-	calledMethods      map[string][][]any
+	pullRequest         github.PullRequest
+	userType            github.UserType
+	requestedReviewers  []github.User
+	previousReviewers   []github.User
+	pullRequestComments []github.PullRequestComment
+	teamMembers         map[string][]github.User
+	calledMethods       map[string][][]any
+	commitMessage       string
 }
 
 func (m *mockGithub) GetPullRequest(prNumber string) (github.PullRequest, error) {
 	m.calledMethods["GetPullRequest"] = append(m.calledMethods["GetPullRequest"], []any{prNumber})
 	return m.pullRequest, nil
+}
+
+func (m *mockGithub) GetPullRequestAuthor(prNumber string) (string, error) {
+	m.calledMethods["GetPullRequestAuthor"] = append(m.calledMethods["GetPullRequestAuthor"], []any{prNumber})
+	return m.pullRequest.User.Login, nil
 }
 
 func (m *mockGithub) GetPullRequests(state, base, sort, direction string) ([]github.PullRequest, error) {
@@ -55,6 +63,26 @@ func (m *mockGithub) GetPullRequestPreviousReviewers(prNumber string) ([]github.
 	return m.previousReviewers, nil
 }
 
+func (m *mockGithub) GetPullRequestComments(prNumber string) ([]github.PullRequestComment, error) {
+	m.calledMethods["GetPullRequestComments"] = append(m.calledMethods["GetPullRequestComments"], []any{prNumber})
+	return m.pullRequestComments, nil
+}
+
+func (m *mockGithub) GetPullRequestComment(commentID int) (github.PullRequestComment, error) {
+	m.calledMethods["GetPullRequestComment"] = append(m.calledMethods["GetPullRequestComment"], []any{commentID})
+	for _, c := range m.pullRequestComments {
+		if c.ID == commentID {
+			return c, nil
+		}
+	}
+	return github.PullRequestComment{}, fmt.Errorf("comment not found")
+}
+
+func (m *mockGithub) GetCommitMessage(owner, repo, sha string) (string, error) {
+	m.calledMethods["GetCommitMessage"] = append(m.calledMethods["GetCommitMessage"], []any{owner, repo, sha})
+	return m.commitMessage, nil
+}
+
 func (m *mockGithub) GetTeamMembers(organization, team string) ([]github.User, error) {
 	m.calledMethods["GetTeamMembers"] = append(m.calledMethods["GetTeamMembers"], []any{organization, team})
 	if team == "" {
@@ -68,8 +96,18 @@ func (m *mockGithub) RequestPullRequestReviewers(prNumber string, reviewers []st
 	return nil
 }
 
-func (m *mockGithub) PostComment(prNumber string, comment string) error {
+func (m *mockGithub) RemovePullRequestReviewers(prNumber string, reviewers []string) error {
+	m.calledMethods["RemovePullRequestReviewers"] = append(m.calledMethods["RemovePullRequestReviewers"], []any{prNumber, reviewers})
+	return nil
+}
+
+func (m *mockGithub) PostComment(prNumber string, comment string) (int, error) {
 	m.calledMethods["PostComment"] = append(m.calledMethods["PostComment"], []any{prNumber, comment})
+	return 0, nil
+}
+
+func (m *mockGithub) UpdateComment(prNumber, comment string, id int) error {
+	m.calledMethods["UpdateComment"] = append(m.calledMethods["UpdateComment"], []any{prNumber, comment, id})
 	return nil
 }
 

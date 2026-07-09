@@ -20,7 +20,6 @@ var testAccProvider *schema.Provider
 
 func init() {
 	configs = make(map[string]*transport_tpg.Config)
-	fwProviders = make(map[string]*frameworkTestProvider)
 	sources = make(map[string]VcrSource)
 	testAccProvider = provider.Provider()
 	TestAccProviders = map[string]*schema.Provider{
@@ -41,6 +40,14 @@ func GoogleProviderConfig(t *testing.T) *transport_tpg.Config {
 
 	sdkProvider := provider.Provider()
 	rc := terraform.ResourceConfig{}
+
+	// `universe_domain` must be specified through config (i.e. unlike most provider settings there's no environment variable), and we check the value matches the credentials during provider initilization
+	// In the test environment we seed the value through a test-only environment variable, and we need to pre-seed a value in ResourceConfig as if it was in config to pass the check
+	universeDomain := envvar.GetTestUniverseDomainFromEnv(t)
+	if universeDomain != "" && universeDomain != "googleapis.com" {
+		rc.Config = make(map[string]interface{})
+		rc.Config["universe_domain"] = universeDomain
+	}
 	sdkProvider.Configure(context.Background(), &rc)
 	return sdkProvider.Meta().(*transport_tpg.Config)
 }
@@ -54,19 +61,19 @@ func AccTestPreCheck(t *testing.T) {
 		os.Setenv("GOOGLE_CREDENTIALS", string(creds))
 	}
 
-	if v := transport_tpg.MultiEnvSearch(envvar.CredsEnvVars); v == "" {
+	if v := envvar.MultiEnvSearch(envvar.CredsEnvVars); v == "" {
 		t.Fatalf("One of %s must be set for acceptance tests", strings.Join(envvar.CredsEnvVars, ", "))
 	}
 
-	if v := transport_tpg.MultiEnvSearch(envvar.ProjectEnvVars); v == "" {
+	if v := envvar.MultiEnvSearch(envvar.ProjectEnvVars); v == "" {
 		t.Fatalf("One of %s must be set for acceptance tests", strings.Join(envvar.ProjectEnvVars, ", "))
 	}
 
-	if v := transport_tpg.MultiEnvSearch(envvar.RegionEnvVars); v == "" {
+	if v := envvar.MultiEnvSearch(envvar.RegionEnvVars); v == "" {
 		t.Fatalf("One of %s must be set for acceptance tests", strings.Join(envvar.RegionEnvVars, ", "))
 	}
 
-	if v := transport_tpg.MultiEnvSearch(envvar.ZoneEnvVars); v == "" {
+	if v := envvar.MultiEnvSearch(envvar.ZoneEnvVars); v == "" {
 		t.Fatalf("One of %s must be set for acceptance tests", strings.Join(envvar.ZoneEnvVars, ", "))
 	}
 }
@@ -78,7 +85,7 @@ func AccTestPreCheck_AdcCredentialsOnly(t *testing.T) {
 	}
 
 	// Fail on set creds
-	if v := transport_tpg.MultiEnvSearch(envvar.CredsEnvVarsExcludingAdcs()); v != "" {
+	if v := envvar.MultiEnvSearch(envvar.CredsEnvVarsExcludingAdcs()); v != "" {
 		t.Fatalf("This acceptance test only uses ADCs, so all of %s must be unset", strings.Join(envvar.CredsEnvVarsExcludingAdcs(), ", "))
 	}
 
@@ -87,15 +94,15 @@ func AccTestPreCheck_AdcCredentialsOnly(t *testing.T) {
 		t.Fatalf("GOOGLE_APPLICATION_CREDENTIALS must be set for acceptance tests that are dependent on ADCs")
 	}
 
-	if v := transport_tpg.MultiEnvSearch(envvar.ProjectEnvVars); v == "" {
+	if v := envvar.MultiEnvSearch(envvar.ProjectEnvVars); v == "" {
 		t.Fatalf("One of %s must be set for acceptance tests", strings.Join(envvar.ProjectEnvVars, ", "))
 	}
 
-	if v := transport_tpg.MultiEnvSearch(envvar.RegionEnvVars); v == "" {
+	if v := envvar.MultiEnvSearch(envvar.RegionEnvVars); v == "" {
 		t.Fatalf("One of %s must be set for acceptance tests", strings.Join(envvar.RegionEnvVars, ", "))
 	}
 
-	if v := transport_tpg.MultiEnvSearch(envvar.ZoneEnvVars); v == "" {
+	if v := envvar.MultiEnvSearch(envvar.ZoneEnvVars); v == "" {
 		t.Fatalf("One of %s must be set for acceptance tests", strings.Join(envvar.ZoneEnvVars, ", "))
 	}
 }

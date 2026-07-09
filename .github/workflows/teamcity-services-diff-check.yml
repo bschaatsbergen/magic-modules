@@ -1,4 +1,5 @@
 name: TeamCity Services Diff Check
+
 permissions: read-all
 
 on:
@@ -15,7 +16,7 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.2
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           fetch-depth: 0
       - name: "Check for New Services"
@@ -37,7 +38,7 @@ jobs:
         # export OUTPUT_PATH=$GOPATH/src/github.com/$UPSTREAM_OWNER/$GH_REPO
         # OUTPUT_PATH changes after each generate (GA/beta)
       - name: Set GOOGLE_REPO_PATH to path where GA provider was generated
-        run: echo "GOOGLE_REPO_PATH=${{ env.OUTPUT_PATH}}" >> $GITHUB_ENV
+        run: echo "GOOGLE_REPO_PATH=${OUTPUT_PATH}" >> $GITHUB_ENV
       - name: TeamCity Google Beta Provider Generate
         if: steps.generate.outcome == 'success'
         uses: ./.github/actions/build-downstream
@@ -45,18 +46,20 @@ jobs:
           repo: 'terraform-provider-google-beta'
           token: '$GITHUB_TOKEN'
       - name: Set GOOGLE_BETA_REPO_PATH to path where beta provider was generated
-        run: echo "GOOGLE_BETA_REPO_PATH=${{ env.OUTPUT_PATH}}" >> $GITHUB_ENV
+        run: echo "GOOGLE_BETA_REPO_PATH=${OUTPUT_PATH}" >> $GITHUB_ENV
       - name: Checkout Repository
         if: steps.generate.outcome == 'success'
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.2
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
       - name: Check that new services have been added to the TeamCity configuration code
         if: steps.generate.outcome == 'success'
         run: |
-          # Create lists of service packages in providers
-          ls ${{env.GOOGLE_REPO_PATH}}/google/services > tools/teamcity-diff-check/services_ga.txt
-          ls ${{env.GOOGLE_BETA_REPO_PATH}}/google-beta/services > tools/teamcity-diff-check/services_beta.txt
+          # Create lists of service packages in providers. Need to cd into repos where go.mod is to do this command.
+          cd ${GOOGLE_REPO_PATH}
+          go list -e -f '{{.Name}}' ${GOOGLE_REPO_PATH}/google/services/* > $GITHUB_WORKSPACE/provider_services_ga.txt
+          cd ${GOOGLE_BETA_REPO_PATH}
+          go list -e -f '{{.Name}}' ${GOOGLE_BETA_REPO_PATH}/google-beta/services/* > $GITHUB_WORKSPACE/provider_services_beta.txt
 
           # Run tool to compare service packages in the providers vs those listed in TeamCity config files
-          cd tools/teamcity-diff-check
-          go run main.go -service_file=services_ga
-          go run main.go -service_file=services_beta
+          cd $GITHUB_WORKSPACE
+          go run ./tools/teamcity-diff-check/main.go -version=ga -provider_services=./provider_services_ga.txt -teamcity_services=./mmv1/third_party/terraform/.teamcity/components/inputs/services_ga.kt
+          go run ./tools/teamcity-diff-check/main.go -version=beta -provider_services=./provider_services_beta.txt -teamcity_services=./mmv1/third_party/terraform/.teamcity/components/inputs/services_beta.kt

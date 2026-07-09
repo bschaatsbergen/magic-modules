@@ -49,6 +49,25 @@ resource "google_bigtable_table" "table" {
 
   column_family {
     family = "family-second"
+    type   = "intsum"
+  }
+
+  column_family {
+    family = "family-third"
+    type   = <<EOF
+        {
+					"aggregateType": {
+						"max": {},
+						"inputType": {
+							"int64Type": {
+								"encoding": {
+									"bigEndianBytes": {}
+								}
+							}
+						}
+					}
+				}
+        EOF
   }
 
   change_stream_retention = "24h0m0s"
@@ -81,13 +100,21 @@ to delete/recreate the entire `google_bigtable_table` resource.
 
 * `change_stream_retention` - (Optional) Duration to retain change stream data for the table. Set to 0 to disable. Must be between 1 and 7 days.
 
-* `automated_backup_policy` - (Optional) Defines an automated backup policy for a table, specified by Retention Period and Frequency. To disable, set both Retention Period and Frequency to 0.
+* `automated_backup_policy` - (Optional) Defines an automated backup policy for a table, specified by `retention_period` and `frequency`. To create a table with automated backup disabled, either omit the `automated_backup_policy` argument or set both `retention_period` and `frequency` to "0". To disable automated backup on an existing table that has automated backup enabled, set both `retention_period` and `frequency` to "0". When updating an existing table, change the `retention_period` or `frequency` by setting the respective property to a non-zero value. The policy also accepts an optional `locations` list to specify backup storage locations; if `locations` is omitted, the policy defaults to all clusters in the instance. If the `automated_backup_policy` argument is not provided on update, the resource's automated backup policy will not be modified.
+  
+* `deletion_policy` - (Optional) Whether Terraform will be prevented from destroying the resource. Defaults to "DELETE".
+    When a 'terraform destroy' or 'terraform apply' would delete the resource,
+    the command will fail if this field is set to "PREVENT" in Terraform state.
+    When set to "ABANDON", the command will remove the resource from Terraform
+    management without updating or deleting the resource in the API.
+    When set to "DELETE", deleting the resource is allowed.
 
 -----
 
 `column_family` supports the following arguments:
 
 * `family` - (Optional) The name of the column family.
+* `type`   - (Optional) The type of the column family.
 
 ## Attributes Reference
 

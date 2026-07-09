@@ -7,6 +7,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-provider-google/google/acctest"
 	"github.com/hashicorp/terraform-provider-google/google/envvar"
+	_ "github.com/hashicorp/terraform-provider-google/google/services/bigtable"
+	_ "github.com/hashicorp/terraform-provider-google/google/services/resourcemanager"
 )
 
 func TestAccBigtableTableIamBinding(t *testing.T) {
@@ -140,10 +142,10 @@ resource "google_service_account" "test-account2" {
 }
 
 resource "google_bigtable_table_iam_binding" "binding" {
-  instance = google_bigtable_instance.instance.name
-  table    = google_bigtable_table.table.name
-  role     = "%s"
-  members  = [
+  instance_name = google_bigtable_instance.instance.name
+  table    		= google_bigtable_table.table.name
+  role     		= "%s"
+  members  		= [
     "serviceAccount:${google_service_account.test-account1.email}",
   ]
 }
@@ -163,10 +165,10 @@ resource "google_service_account" "test-account2" {
 }
 
 resource "google_bigtable_table_iam_binding" "binding" {
-  instance = google_bigtable_instance.instance.name
-  table    = google_bigtable_table.table.name
-  role     = "%s"
-  members  = [
+  instance_name = google_bigtable_instance.instance.name
+  table		    = google_bigtable_table.table.name
+  role     		= "%s"
+  members  		= [
     "serviceAccount:${google_service_account.test-account1.email}",
     "serviceAccount:${google_service_account.test-account2.email}",
   ]
@@ -182,10 +184,10 @@ resource "google_service_account" "test-account" {
 }
 
 resource "google_bigtable_table_iam_member" "member" {
-  instance = google_bigtable_instance.instance.name
-  table    = google_bigtable_table.table.name
-  role     = "%s"
-  member   = "serviceAccount:${google_service_account.test-account.email}"
+  instance_name = google_bigtable_instance.instance.name
+  table		    = google_bigtable_table.table.name
+  role     		= "%s"
+  member   		= "serviceAccount:${google_service_account.test-account.email}"
 }
 `, instance, cluster, cluster, account, role)
 }
@@ -205,14 +207,14 @@ data "google_iam_policy" "policy" {
 }
 
 resource "google_bigtable_table_iam_policy" "policy" {
-  instance    = google_bigtable_instance.instance.name
-  table       = google_bigtable_table.table.name
-  policy_data = data.google_iam_policy.policy.policy_data
+  instance_name = google_bigtable_instance.instance.name
+  table       	= google_bigtable_table.table.name
+  policy_data 	= data.google_iam_policy.policy.policy_data
 }
 
 data "google_bigtable_table_iam_policy" "policy" {
-  instance    = google_bigtable_instance.instance.name
-  table       = google_bigtable_table.table.name
+  instance_name = google_bigtable_instance.instance.name
+  table       	= google_bigtable_table.table.name
 }
 
 `, instance, cluster, cluster, account, role)

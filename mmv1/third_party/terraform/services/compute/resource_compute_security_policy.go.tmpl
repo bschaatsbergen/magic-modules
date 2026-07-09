@@ -1,0 +1,2136 @@
+package compute
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log"
+	"reflect"
+	"strings"
+	"time"
+
+	"github.com/hashicorp/errwrap"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+
+	"github.com/hashicorp/terraform-provider-google/google/registry"
+	"github.com/hashicorp/terraform-provider-google/google/tpgresource"
+	transport_tpg "github.com/hashicorp/terraform-provider-google/google/transport"
+	"github.com/hashicorp/terraform-provider-google/google/verify"
+)
+
+func verifyRulePriorityCompareEmptyValues(d *schema.ResourceData, rulePriority int, schemaKey string) bool {
+	if schemaRules, ok := d.GetOk("rule"); ok {
+		for _, itemRaw := range schemaRules.(*schema.Set).List() {
+			if itemRaw == nil {
+				continue
+			}
+			item := itemRaw.(map[string]interface{})
+
+			schemaPriority := item["priority"].(int)
+			if rulePriority == schemaPriority {
+				if tpgresource.IsEmptyValue(reflect.ValueOf(item[schemaKey])) {
+					return true
+				}
+				break
+			}
+		}
+	}
+	return false
+}
+
+// IsEmptyValue does not consider a empty PreconfiguredWafConfig object as empty so we check it's nested values
+func preconfiguredWafConfigIsEmptyValue(config map[string]interface{}) bool {
+	exclusions, _ := config["exclusions"].([]interface{})
+	return len(exclusions) == 0
+}
+
+func ResourceComputeSecurityPolicy() *schema.Resource {
+	return &schema.Resource{
+		Create: resourceComputeSecurityPolicyCreate,
+		Read:   resourceComputeSecurityPolicyRead,
+		Update: resourceComputeSecurityPolicyUpdate,
+		Delete: resourceComputeSecurityPolicyDelete,
+		Importer: &schema.ResourceImporter{
+			State: resourceSecurityPolicyStateImporter,
+		},
+		CustomizeDiff: customdiff.All(
+            tpgresource.DefaultProviderDeletionPolicy("DELETE"),
+			tpgresource.DefaultProviderProject,
+			tpgresource.SetLabelsDiff,
+			rulesCustomizeDiff,
+		),
+
+		Timeouts: &schema.ResourceTimeout{
+			Create: schema.DefaultTimeout(60 * time.Minute),
+			Update: schema.DefaultTimeout(60 * time.Minute),
+			Delete: schema.DefaultTimeout(60 * time.Minute),
+		},
+
+		Schema: map[string]*schema.Schema{
+			"name": {
+				Type:         schema.TypeString,
+				Required:     true,
+				ForceNew:     true,
+				ValidateFunc: verify.ValidateGCEName,
+				Description:  `The name of the security policy.`,
+			},
+
+			"description": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				Description: `An optional description of this security policy. Max size is 2048.`,
+			},
+
+			"project": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				Computed:    true,
+				ForceNew:    true,
+				Description: `The project in which the resource belongs. If it is not provided, the provider project is used.`,
+			},
+
+			"type": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				Computed:    true,
+				ForceNew:    true,
+				Description: `The type indicates the intended use of the security policy. CLOUD_ARMOR - Cloud Armor backend security policies can be configured to filter incoming HTTP requests targeting backend services. They filter requests before they hit the origin servers. CLOUD_ARMOR_EDGE - Cloud Armor edge security policies can be configured to filter incoming HTTP requests targeting backend services (including Cloud CDN-enabled) as well as backend buckets (Cloud Storage). They filter requests before the request is served from Google's cache.`,
+				ValidateFunc: validation.StringInSlice([]string{"CLOUD_ARMOR", "CLOUD_ARMOR_EDGE", "CLOUD_ARMOR_INTERNAL_SERVICE"}, false),
+			},
+
+			"rule": {
+				Type:     schema.TypeSet,
+				Optional: true,
+				Computed: true, // If no rules are set, a default rule is added
+				Set:      resourceComputeSecurityPolicyRuleHash,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"action": {
+							Type:         schema.TypeString,
+							Required:     true,
+							Description:  `Action to take when match matches the request.`,
+						},
+
+						"priority": {
+							Type:        schema.TypeInt,
+							Required:    true,
+							Description: `An unique positive integer indicating the priority of evaluation for a rule. Rules are evaluated from highest priority (lowest numerically) to lowest priority (highest numerically) in order.`,
+						},
+
+						"match": {
+							Type:     schema.TypeList,
+							Required: true,
+							MaxItems: 1,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"config": {
+										Type:     schema.TypeList,
+										Optional: true,
+										MaxItems: 1,
+										Elem: &schema.Resource{
+											Schema: map[string]*schema.Schema{
+												"src_ip_ranges": {
+													Type:        schema.TypeSet,
+													Required:    true,
+													MinItems:    1,
+													MaxItems:    10,
+													Elem:        &schema.Schema{Type: schema.TypeString},
+													Description: `Set of IP addresses or ranges (IPV4 or IPV6) in CIDR notation to match against inbound traffic. There is a limit of 10 IP ranges per rule. A value of '*' matches all IPs (can be used to override the default behavior).`,
+												},
+											},
+										},
+										Description: `The configuration options available when specifying versioned_expr. This field must be specified if versioned_expr is specified and cannot be specified if versioned_expr is not specified.`,
+									},
+
+									"versioned_expr": {
+										Type:         schema.TypeString,
+										Optional:     true,
+										Default:      "",
+										ValidateFunc: validation.StringInSlice([]string{"SRC_IPS_V1"}, false),
+										Description:  `Predefined rule expression. If this field is specified, config must also be specified. Available options:   SRC_IPS_V1: Must specify the corresponding src_ip_ranges field in config.`,
+									},
+
+									"expr": {
+										Type:     schema.TypeList,
+										Optional: true,
+										MaxItems: 1,
+										Elem: &schema.Resource{
+											Schema: map[string]*schema.Schema{
+												"expression": {
+													Type:        schema.TypeString,
+													Required:    true,
+													Description: `Textual representation of an expression in Common Expression Language syntax. The application context of the containing message determines which well-known feature set of CEL is supported.`,
+												},
+												// These fields are not yet supported (Issue hashicorp/terraform-provider-google#4497: mbang)
+												// "title": {
+												// 	Type:     schema.TypeString,
+												// 	Optional: true,
+												// },
+												// "description": {
+												// 	Type:     schema.TypeString,
+												// 	Optional: true,
+												// },
+												// "location": {
+												// 	Type:     schema.TypeString,
+												// 	Optional: true,
+												// },
+											},
+										},
+										Description: `User defined CEVAL expression. A CEVAL expression is used to specify match criteria such as origin.ip, source.region_code and contents in the request header.`,
+									},
+
+									"expr_options": {
+										Type:     schema.TypeList,
+										Optional: true,
+										MaxItems: 1,
+										Description: `The configuration options available when specifying a user defined CEVAL expression (i.e., 'expr').`,
+										Elem: &schema.Resource{
+											Schema: map[string]*schema.Schema{
+												"recaptcha_options": {
+													Type:     schema.TypeList,
+													Required: true,
+													MaxItems: 1,
+													Description: `reCAPTCHA configuration options to be applied for the rule. If the rule does not evaluate reCAPTCHA tokens, this field has no effect.`,
+													Elem: &schema.Resource{
+														Schema: map[string]*schema.Schema{
+															"action_token_site_keys": {
+																Type:     schema.TypeList,
+																Optional: true,
+																Description: `A list of site keys to be used during the validation of reCAPTCHA action-tokens. The provided site keys need to be created from reCAPTCHA API under the same project where the security policy is created`,
+																MinItems: 1,
+																Elem: &schema.Schema{
+																	Type: schema.TypeString,
+																},
+															},
+															"session_token_site_keys": {
+																Type:     schema.TypeList,
+																Optional: true,
+																Description: `A list of site keys to be used during the validation of reCAPTCHA session-tokens. The provided site keys need to be created from reCAPTCHA API under the same project where the security policy is created.`,
+																MinItems: 1,
+																Elem: &schema.Schema{
+																	Type: schema.TypeString,
+																},
+															},
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+							Description: `A match condition that incoming traffic is evaluated against. If it evaluates to true, the corresponding action is enforced.`,
+						},
+
+						"preconfigured_waf_config": {
+							Type:     schema.TypeList,
+							Optional: true,
+							MaxItems: 1,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"exclusion": {
+										Type:     schema.TypeList,
+										Optional: true,
+										Elem: &schema.Resource{
+											Schema: map[string]*schema.Schema{
+												"request_header": resourceComputeSecurityPolicyRulePreconfiguredWafConfigExclusionFieldParamsSchema(
+													`Request header whose value will be excluded from inspection during preconfigured WAF evaluation.`,
+												),
+
+												"request_cookie": resourceComputeSecurityPolicyRulePreconfiguredWafConfigExclusionFieldParamsSchema(
+													`Request cookie whose value will be excluded from inspection during preconfigured WAF evaluation.`,
+												),
+
+												"request_uri": resourceComputeSecurityPolicyRulePreconfiguredWafConfigExclusionFieldParamsSchema(
+													`Request URI from the request line to be excluded from inspection during preconfigured WAF evaluation. When specifying this field, the query or fragment part should be excluded.`,
+												),
+
+												"request_query_param": resourceComputeSecurityPolicyRulePreconfiguredWafConfigExclusionFieldParamsSchema(
+													`Request query parameter whose value will be excluded from inspection during preconfigured WAF evaluation.  Note that the parameter can be in the query string or in the POST body.`,
+												),
+
+												"target_rule_set": {
+													Type:        schema.TypeString,
+													Required:    true,
+													Description: `Target WAF rule set to apply the preconfigured WAF exclusion.`,
+												},
+
+												"target_rule_ids": {
+													Type:        schema.TypeSet,
+													Optional:    true,
+													Elem:        &schema.Schema{Type: schema.TypeString},
+													Description: `A list of target rule IDs under the WAF rule set to apply the preconfigured WAF exclusion. If omitted, it refers to all the rule IDs under the WAF rule set.`,
+												},
+											},
+										},
+										Description: `An exclusion to apply during preconfigured WAF evaluation.`,
+									},
+								},
+							},
+							Description: `Preconfigured WAF configuration to be applied for the rule. If the rule does not evaluate preconfigured WAF rules, i.e., if evaluatePreconfiguredWaf() is not used, this field will have no effect.`,
+						},
+
+						"description": {
+							Type:        schema.TypeString,
+							Default:     "",
+							Optional:    true,
+							Description: `An optional description of this rule. Max size is 64.`,
+						},
+
+						"preview": {
+							Type:        schema.TypeBool,
+							Optional:    true,
+							Computed:    true,
+							Description: `When set to true, the action specified above is not enforced. Stackdriver logs for requests that trigger a preview action are annotated as such.`,
+						},
+
+						"rate_limit_options": {
+							Type:        schema.TypeList,
+							Optional:    true,
+							Description: `Rate limit threshold for this security policy. Must be specified if the action is "rate_based_ban" or "throttle". Cannot be specified for any other actions.`,
+							MaxItems:    1,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"rate_limit_threshold": {
+										Type:        schema.TypeList,
+										Required:    true,
+										Description: `Threshold at which to begin ratelimiting.`,
+										MaxItems:    1,
+										Elem: &schema.Resource{
+											Schema: map[string]*schema.Schema{
+												"count": {
+													Type:        schema.TypeInt,
+													Required:    true,
+													Description: `Number of HTTP(S) requests for calculating the threshold.`,
+												},
+
+												"interval_sec": {
+													Type:        schema.TypeInt,
+													Required:    true,
+													Description: `Interval over which the threshold is computed.`,
+												},
+											},
+										},
+									},
+
+									"conform_action": {
+										Type:         schema.TypeString,
+										Required:     true,
+										ValidateFunc: validation.StringInSlice([]string{"allow"}, false),
+										Description:  `Action to take for requests that are under the configured rate limit threshold. Valid option is "allow" only.`,
+									},
+
+									"exceed_action": {
+										Type:         schema.TypeString,
+										Required:     true,
+										ValidateFunc: validation.StringInSlice([]string{"redirect", "deny(403)", "deny(404)", "deny(429)", "deny(502)"}, false),
+										Description:  `Action to take for requests that are above the configured rate limit threshold, to either deny with a specified HTTP response code, or redirect to a different endpoint. Valid options are "deny()" where valid values for status are 403, 404, 429, and 502, and "redirect" where the redirect parameters come from exceedRedirectOptions below.`,
+									},
+
+									"enforce_on_key": {
+										Type:         schema.TypeString,
+										Optional:     true,
+										Description:  `Determines the key to enforce the rateLimitThreshold on`,
+										ValidateFunc: validation.StringInSlice([]string{"ALL", "IP", "HTTP_HEADER", "XFF_IP", "HTTP_COOKIE", "HTTP_PATH", "SNI", "REGION_CODE", "TLS_JA3_FINGERPRINT", "TLS_JA4_FINGERPRINT", "USER_IP", ""}, false),
+									},
+
+									"enforce_on_key_name": {
+										Type:        schema.TypeString,
+										Optional:    true,
+										Description: `Rate limit key name applicable only for the following key types: HTTP_HEADER -- Name of the HTTP header whose value is taken as the key value. HTTP_COOKIE -- Name of the HTTP cookie whose value is taken as the key value.`,
+									},
+
+									"enforce_on_key_configs": {
+										Type:        schema.TypeList,
+										Description: `Enforce On Key Config of this security policy`,
+										Optional:    true,
+										Elem: &schema.Resource{
+											Schema: map[string]*schema.Schema{
+												"enforce_on_key_type": {
+													Type:         schema.TypeString,
+													Optional:     true,
+													Description:  `Determines the key to enforce the rate_limit_threshold on`,
+													ValidateFunc: validation.StringInSlice([]string{"ALL", "IP", "HTTP_HEADER", "XFF_IP", "HTTP_COOKIE", "HTTP_PATH", "SNI", "REGION_CODE", "TLS_JA3_FINGERPRINT", "TLS_JA4_FINGERPRINT", "USER_IP"}, false),
+												},
+												"enforce_on_key_name": {
+													Type:        schema.TypeString,
+													Optional:    true,
+													Description: `Rate limit key name applicable only for the following key types: HTTP_HEADER -- Name of the HTTP header whose value is taken as the key value. HTTP_COOKIE -- Name of the HTTP cookie whose value is taken as the key value.`,
+												},
+											},
+										},
+									},
+
+									"ban_threshold": {
+										Type:        schema.TypeList,
+										Optional:    true,
+										Description: `Can only be specified if the action for the rule is "rate_based_ban". If specified, the key will be banned for the configured 'banDurationSec' when the number of requests that exceed the 'rateLimitThreshold' also exceed this 'banThreshold'.`,
+										MaxItems:    1,
+										Elem: &schema.Resource{
+											Schema: map[string]*schema.Schema{
+												"count": {
+													Type:        schema.TypeInt,
+													Required:    true,
+													Description: `Number of HTTP(S) requests for calculating the threshold.`,
+												},
+
+												"interval_sec": {
+													Type:        schema.TypeInt,
+													Required:    true,
+													Description: `Interval over which the threshold is computed.`,
+												},
+											},
+										},
+									},
+
+									"ban_duration_sec": {
+										Type:        schema.TypeInt,
+										Optional:    true,
+										Description: `Can only be specified if the action for the rule is "rate_based_ban". If specified, determines the time (in seconds) the traffic will continue to be banned by the rate limit after the rate falls below the threshold.`,
+									},
+
+									"exceed_redirect_options": {
+										Type:        schema.TypeList,
+										Optional:    true,
+										Description: `Parameters defining the redirect action that is used as the exceed action. Cannot be specified if the exceed action is not redirect.`,
+										MaxItems:    1,
+										Elem: &schema.Resource{
+											Schema: map[string]*schema.Schema{
+												"type": {
+													Type:        schema.TypeString,
+													Required:    true,
+													Description: `Type of the redirect action.`,
+													ValidateFunc: validation.StringInSlice([]string{"EXTERNAL_302", "GOOGLE_RECAPTCHA"}, false),
+												},
+
+												"target": {
+													Type:        schema.TypeString,
+													Optional:    true,
+													Description: `Target for the redirect action. This is required if the type is EXTERNAL_302 and cannot be specified for GOOGLE_RECAPTCHA.`,
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+
+						"redirect_options": {
+							Type:     schema.TypeList,
+							Optional: true,
+							MaxItems: 1,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"type": {
+										Type:         schema.TypeString,
+										Required:     true,
+										ValidateFunc: validation.StringInSlice([]string{"EXTERNAL_302", "GOOGLE_RECAPTCHA"}, false),
+										Description:  `Type of the redirect action. Available options: EXTERNAL_302: Must specify the corresponding target field in config. GOOGLE_RECAPTCHA: Cannot specify target field in config.`,
+									},
+
+									"target": {
+										Type:         schema.TypeString,
+										Optional:     true,
+										Description:  `Target for the redirect action. This is required if the type is EXTERNAL_302 and cannot be specified for GOOGLE_RECAPTCHA.`,
+									},
+								},
+							},
+							Description: `Parameters defining the redirect action. Cannot be specified for any other actions.`,
+						},
+						"header_action": {
+							Type: schema.TypeList,
+							Optional: true,
+							MaxItems: 1,
+							Description: `Additional actions that are performed on headers.`,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"request_headers_to_adds": {
+										Type: schema.TypeList,
+										Required: true,
+										Description: `The list of request headers to add or overwrite if they're already present.`,
+										Elem: &schema.Resource{
+											Schema: map[string]*schema.Schema{
+												"header_name": {
+													Type: schema.TypeString,
+													Required: true,
+													Description: `The name of the header to set.`,
+												},
+												"header_value": {
+													Type: schema.TypeString,
+													Optional: true,
+													Description: `The value to set the named header to.`,
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+				Description: `The set of rules that belong to this policy. There must always be a default rule (rule with priority 2147483647 and match "*"). If no rules are provided when creating a security policy, a default rule with action "allow" will be added.`,
+			},
+
+			"fingerprint": {
+				Type:        schema.TypeString,
+				Computed:    true,
+				Description: `Fingerprint of this resource.`,
+			},
+
+			"self_link": {
+				Type:        schema.TypeString,
+				Computed:    true,
+				Description: `The URI of the created resource.`,
+			},
+
+			"advanced_options_config": {
+				Type: schema.TypeList,
+				Optional: true,
+				Computed: true,
+				Description: `Advanced Options Config of this security policy.`,
+				MaxItems: 1,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"json_parsing": {
+							Type: schema.TypeString,
+							Optional: true,
+							Computed: true,
+							ValidateFunc: validation.StringInSlice([]string{"DISABLED", "STANDARD", "STANDARD_WITH_GRAPHQL"}, false),
+							Description: `JSON body parsing. Supported values include: "DISABLED", "STANDARD".`,
+						},
+						"json_custom_config": {
+							Type:        schema.TypeList,
+							Optional:    true,
+							Computed:    true,
+							Description: `Custom configuration to apply the JSON parsing. Only applicable when JSON parsing is set to STANDARD.`,
+							MaxItems:    1,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"content_types": {
+										Type: schema.TypeSet,
+										Required: true,
+										Elem: &schema.Schema{Type: schema.TypeString},
+										Description: `A list of custom Content-Type header values to apply the JSON parsing.`,
+									},
+								},
+							},
+						},
+						"log_level": {
+							Type: schema.TypeString,
+							Optional: true,
+							Computed: true,
+							ValidateFunc: validation.StringInSlice([]string{"NORMAL", "VERBOSE"}, false),
+							Description: `Logging level. Supported values include: "NORMAL", "VERBOSE".`,
+						},
+						"user_ip_request_headers": {
+							Type:        schema.TypeSet,
+							Optional:    true,
+							Description: `An optional list of case-insensitive request header names to use for resolving the callers client IP address.`,
+							Elem:        &schema.Schema{Type: schema.TypeString},
+						},
+						"request_body_inspection_size": {
+							Type: schema.TypeString,
+							Optional: true,
+							Computed: true,
+							ValidateFunc: validation.StringInSlice([]string{"8KB", "16KB", "32KB", "48KB", "64KB"}, false),
+							Description: `The maximum request size chosen by the customer with Waf enabled. Values supported are "8KB", "16KB, "32KB", "48KB" and "64KB". Values are case insensitive.`,
+						},
+					},
+				},
+			},
+
+			"adaptive_protection_config": {
+				Type: schema.TypeList,
+				Optional: true,
+				Description: `Adaptive Protection Config of this security policy.`,
+				MaxItems: 1,
+				DiffSuppressFunc: tpgresource.SuppressLayer7DdosDefenseMissing,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"layer_7_ddos_defense_config":  {
+							Type: schema.TypeList,
+							Description: `Layer 7 DDoS Defense Config of this security policy`,
+							Optional: true,
+							MaxItems: 1,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"enable": {
+										Type: schema.TypeBool,
+										Optional: true,
+										Description: `If set to true, enables CAAP for L7 DDoS detection.`,
+									},
+									"rule_visibility": {
+										Type: schema.TypeString,
+										Optional: true,
+										Computed: true,
+										ValidateFunc: validation.StringInSlice([]string{"STANDARD", "PREMIUM"}, false),
+										Description: `Rule visibility. Supported values include: "STANDARD", "PREMIUM".`,
+									},
+									"threshold_configs": {
+										Type: schema.TypeList,
+										Description: `Configuration options for layer7 adaptive protection for various customizable thresholds.`,
+										Optional: true,
+										Elem: &schema.Resource{
+											Schema: map[string]*schema.Schema{
+												"name": {
+													Type: schema.TypeString,
+													Required: true,
+													Description: `The name must be 1-63 characters long, and comply with RFC1035. The name must be unique within the security policy.`,
+													ValidateFunc: validation.StringLenBetween(1, 63),
+												},
+												"auto_deploy_load_threshold": {
+													Type: schema.TypeFloat,
+													Optional: true,
+													ValidateFunc: validation.FloatAtLeast(0.0),
+												},
+												"auto_deploy_confidence_threshold": {
+													Type: schema.TypeFloat,
+													Optional: true,
+													ValidateFunc: validation.FloatBetween(0.0, 1.0),
+												},
+												"auto_deploy_impacted_baseline_threshold": {
+													Type: schema.TypeFloat,
+													Optional: true,
+													ValidateFunc: validation.FloatBetween(0.0, 1.0),
+												},
+												"auto_deploy_expiration_sec": {
+													Type: schema.TypeInt,
+													Optional: true,
+													ValidateFunc: validation.IntBetween(1, 7776000),
+												},
+												"detection_load_threshold": {
+													Type: schema.TypeFloat,
+													Optional: true,
+													ValidateFunc: validation.FloatAtLeast(0.0),
+												},
+												"detection_absolute_qps": {
+													Type: schema.TypeFloat,
+													Optional: true,
+													ValidateFunc: validation.FloatAtLeast(0.0),
+												},
+												"detection_relative_to_baseline_qps": {
+													Type: schema.TypeFloat,
+													Optional: true,
+													ValidateFunc: validation.FloatAtLeast(1.0),
+												},
+												"traffic_granularity_configs": {
+													Type: schema.TypeList,
+													Optional: true,
+													Elem: &schema.Resource{
+														Schema: map[string]*schema.Schema{
+															"type": {
+																Type: schema.TypeString,
+																Required: true,
+																Description: `Type of this configuration.`,
+																ValidateFunc: validation.StringInSlice([]string{"HTTP_HEADER_HOST", "HTTP_PATH"}, false),
+															},
+															"value": {
+																Type: schema.TypeString,
+																Optional: true,
+																Description: `Requests that match this value constitute a granular traffic unit.`,
+															},
+															"enable_each_unique_value": {
+																Type: schema.TypeBool,
+																Optional: true,
+																Description: `If enabled, traffic matching each unique value for the specified type constitutes a separate traffic unit. It can only be set to true if value is empty.`,
+															},
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+						{{- if ne $.TargetVersionName "ga" }}
+						"auto_deploy_config": {
+							Type:        schema.TypeList,
+							Description: `Auto Deploy Config of this security policy`,
+							Optional:    true,
+							MaxItems: 1,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"load_threshold": {
+										Type:        schema.TypeFloat,
+										Optional:    true,
+										Description: `Identifies new attackers only when the load to the backend service that is under attack exceeds this threshold.`,
+									},
+									"confidence_threshold": {
+										Type:        schema.TypeFloat,
+										Optional:    true,
+										Description: `Rules are only automatically deployed for alerts on potential attacks with confidence scores greater than this threshold.`,
+									},
+									"impacted_baseline_threshold": {
+										Type:        schema.TypeFloat,
+										Optional:    true,
+										Description: `Rules are only automatically deployed when the estimated impact to baseline traffic from the suggested mitigation is below this threshold.`,
+									},
+									"expiration_sec": {
+										Type:        schema.TypeInt,
+										Optional:    true,
+										Description: `Google Cloud Armor stops applying the action in the automatically deployed rule to an identified attacker after this duration. The rule continues to operate against new requests.`,
+									},
+								},
+							},
+						},
+						{{- end }}
+					},
+				},
+			},
+			"recaptcha_options_config": {
+				Type: schema.TypeList,
+				Optional: true,
+				Description: `reCAPTCHA configuration options to be applied for the security policy.`,
+				MaxItems: 1,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"redirect_site_key": {
+							Type: schema.TypeString,
+							Required: true,
+							Description: `A field to supply a reCAPTCHA site key to be used for all the rules using the redirect action with the type of GOOGLE_RECAPTCHA under the security policy. The specified site key needs to be created from the reCAPTCHA API. The user is responsible for the validity of the specified site key. If not specified, a Google-managed site key is used.`,
+						},
+					},
+				},
+			},
+			"labels": {
+				Type:     schema.TypeMap,
+				Optional: true,
+				Elem: &schema.Schema{
+					Type: schema.TypeString,
+				},
+				Description: `Labels to apply to this address.  A list of key->value pairs.
+
+
+**Note**: This field is non-authoritative, and will only manage the labels present in your configuration.
+Please refer to the field 'effective_labels' for all of the labels present on the resource.`,
+			},
+			"terraform_labels": {
+				Type:        schema.TypeMap,
+				Computed:    true,
+				Description: `The combination of labels configured directly on the resource and default labels configured on the provider.`,
+				Elem:        &schema.Schema{Type: schema.TypeString},
+			},
+			"effective_labels": {
+				Type:        schema.TypeMap,
+				Computed:    true,
+				Description: `All of labels (key/value pairs) present on the resource in GCP, including the labels configured through Terraform, other clients and services.`,
+				Elem:        &schema.Schema{Type: schema.TypeString},
+			},
+			"label_fingerprint": {
+				Type:        schema.TypeString,
+				Computed:    true,
+				Description: `The unique fingerprint of the labels.`,
+			},
+			//UDP schema start
+            "deletion_policy": tpgresource.DeletionPolicySchemaEntry("DELETE"),
+//UDP schema end
+		},
+		UseJSONNumber: true,
+	}
+}
+
+func resourceComputeSecurityPolicyRulePreconfiguredWafConfigExclusionFieldParamsSchema(description string) *schema.Schema {
+	return &schema.Schema{
+		Type:     schema.TypeList,
+		Optional: true,
+		Elem: &schema.Resource{
+			Schema: map[string]*schema.Schema{
+				"operator": {
+					Type:         schema.TypeString,
+					Required:     true,
+					ValidateFunc: validation.StringInSlice([]string{"EQUALS", "STARTS_WITH", "ENDS_WITH", "CONTAINS", "EQUALS_ANY"}, false),
+					Description:  `You can specify an exact match or a partial match by using a field operator and a field value. Available options: EQUALS: The operator matches if the field value equals the specified value. STARTS_WITH: The operator matches if the field value starts with the specified value. ENDS_WITH: The operator matches if the field value ends with the specified value. CONTAINS: The operator matches if the field value contains the specified value. EQUALS_ANY: The operator matches if the field value is any value.`,
+				},
+				"value": {
+					Type:        schema.TypeString,
+					Optional:    true,
+					Description: `A request field matching the specified value will be excluded from inspection during preconfigured WAF evaluation. The field value must be given if the field operator is not EQUALS_ANY, and cannot be given if the field operator is EQUALS_ANY.`,
+				},
+			},
+		},
+		Description: description,
+	}
+}
+
+// resourceComputeSecurityPolicyRuleHash hashes security policy rules by priority and action.
+// Using only priority causes hash collisions when two rules share the same priority (which
+// the API rejects, but which users may write transiently), causing schema.Set to silently
+// drop one rule and bypass the duplicate-priority validation in rulesCustomizeDiff.
+// Including action ensures distinct rules always produce distinct hashes while still
+// excluding volatile optional fields (description, preview, match sub-fields) that the
+// API may return as empty strings instead of nil, preventing unnecessary rule recreation.
+func resourceComputeSecurityPolicyRuleHash(v interface{}) int {
+	raw := v.(map[string]interface{})
+	var buf bytes.Buffer
+	buf.WriteString(fmt.Sprintf("%d-", raw["priority"].(int)))
+	buf.WriteString(fmt.Sprintf("%s-", raw["action"].(string)))
+	return tpgresource.Hashcode(buf.String())
+}
+
+func rulesCustomizeDiff(_ context.Context, diff *schema.ResourceDiff, _ interface{}) error {
+	_, n := diff.GetChange("rule")
+	nSet := n.(*schema.Set)
+
+	nPriorities := map[int64]bool{}
+	for _, rule := range nSet.List() {
+		priority := int64(rule.(map[string]interface{})["priority"].(int))
+		if nPriorities[priority] {
+			return fmt.Errorf("Two rules have the same priority, please update one of the priorities to be different.")
+		}
+		nPriorities[priority] = true
+	}
+
+	return nil
+}
+
+func resourceComputeSecurityPolicyCreate(d *schema.ResourceData, meta interface{}) error {
+	config := meta.(*transport_tpg.Config)
+	userAgent, err := tpgresource.GenerateUserAgentString(d, config.UserAgent)
+	if err != nil {
+		return err
+	}
+
+	project, err := tpgresource.GetProject(d, config)
+	if err != nil {
+		return err
+	}
+
+	sp := d.Get("name").(string)
+	body := map[string]interface{}{
+		"name":        sp,
+		"description": d.Get("description").(string),
+	}
+
+	if v, ok := d.GetOk("type"); ok {
+		body["type"] = v.(string)
+	}
+
+	if v, ok := d.GetOk("rule"); ok {
+		body["rules"] = expandSecurityPolicyRules(v.(*schema.Set).List())
+	}
+
+	if v, ok := d.GetOk("advanced_options_config"); ok {
+		body["advancedOptionsConfig"] = expandSecurityPolicyAdvancedOptionsConfig(v.([]interface{}))
+	}
+
+	if v, ok := d.GetOk("adaptive_protection_config"); ok {
+		body["adaptiveProtectionConfig"] = expandSecurityPolicyAdaptiveProtectionConfig(v.([]interface{}))
+	}
+
+	if v, ok := d.GetOk("recaptcha_options_config"); ok {
+		body["recaptchaOptionsConfig"] = expandSecurityPolicyRecaptchaOptionsConfig(v.([]interface{}), d)
+	}
+
+	log.Printf("[DEBUG] SecurityPolicy insert request: %#v", body)
+
+	res, err := transport_tpg.SendRequest(transport_tpg.SendRequestOptions{
+		Config:    config,
+		Method:    "POST",
+		Project:   project,
+		RawURL:    fmt.Sprintf("%sprojects/%s/global/securityPolicies", transport_tpg.BaseUrl(Product, config), project),
+		UserAgent: userAgent,
+		Body:      body,
+	})
+	if err != nil {
+		return errwrap.Wrapf("Error creating SecurityPolicy: {{"{{"}}err{{"}}"}}", err)
+	}
+
+	id, err := tpgresource.ReplaceVars(d, config, "projects/{{"{{"}}project{{"}}"}}/global/securityPolicies/{{"{{"}}name{{"}}"}}")
+	if err != nil {
+		return fmt.Errorf("Error constructing id: %s", err)
+	}
+	d.SetId(id)
+
+	err = ComputeOperationWaitTime(config, res, project, fmt.Sprintf("Creating SecurityPolicy %q", sp), userAgent, d.Timeout(schema.TimeoutCreate))
+	if err != nil {
+		return err
+	}
+
+	if effectiveLabels := tpgresource.ExpandEffectiveLabels(d); effectiveLabels != nil {
+		userLabels := d.Get("labels")
+		terraformLabels := d.Get("terraform_labels")
+
+		// Labels cannot be set in a create.  We'll have to set them here.
+		err = resourceComputeSecurityPolicyRead(d, meta)
+		if err != nil {
+			return err
+		}
+
+		// Now we can set the labels
+		res, err = transport_tpg.SendRequest(transport_tpg.SendRequestOptions{
+			Config:    config,
+			Method:    "POST",
+			Project:   project,
+			RawURL:    fmt.Sprintf("%sprojects/%s/global/securityPolicies/%s/setLabels", transport_tpg.BaseUrl(Product, config), project, sp),
+			UserAgent: userAgent,
+			Body: map[string]interface{}{
+				"labels":           effectiveLabels,
+				"labelFingerprint": d.Get("label_fingerprint").(string),
+			},
+		})
+		if err != nil {
+			return err
+		}
+
+		err = ComputeOperationWaitTime(config, res, project, fmt.Sprintf("Creating SecurityPolicy.Labels %q", sp), userAgent, d.Timeout(schema.TimeoutCreate))
+		if err != nil {
+			return err
+		}
+
+		// Set back the labels field, as it is needed to decide the value of "labels" in the state in the read function.
+		if err := d.Set("labels", userLabels); err != nil {
+			return fmt.Errorf("Error setting back labels: %s", err)
+		}
+
+		// Set back the terraform_labels field, as it is needed to decide the value of "terraform_labels" in the state in the read function.
+		if err := d.Set("terraform_labels", terraformLabels); err != nil {
+			return fmt.Errorf("Error setting back terraform_labels: %s", err)
+		}
+
+		// Set back the effective_labels field, as it is needed to decide the value of "effective_labels" in the state in the read function.
+		if err := d.Set("effective_labels", effectiveLabels); err != nil {
+			return fmt.Errorf("Error setting back effective_labels: %s", err)
+		}
+	}
+
+	return resourceComputeSecurityPolicyRead(d, meta)
+}
+
+func resourceComputeSecurityPolicyRead(d *schema.ResourceData, meta interface{}) error {
+	config := meta.(*transport_tpg.Config)
+	userAgent, err :=  tpgresource.GenerateUserAgentString(d, config.UserAgent)
+	if err != nil {
+		return err
+	}
+
+	project, err := tpgresource.GetProject(d, config)
+	if err != nil {
+		return err
+	}
+
+	sp := d.Get("name").(string)
+
+	res, err := transport_tpg.SendRequest(transport_tpg.SendRequestOptions{
+		Config:    config,
+		Method:    "GET",
+		Project:   project,
+		RawURL:    fmt.Sprintf("%sprojects/%s/global/securityPolicies/%s", transport_tpg.BaseUrl(Product, config), project, sp),
+		UserAgent: userAgent,
+	})
+	if err != nil {
+		return transport_tpg.HandleNotFoundError(err, d, fmt.Sprintf("SecurityPolicy %q", d.Id()))
+	}
+
+	if err := d.Set("name", res["name"]); err != nil {
+		return fmt.Errorf("Error setting name: %s", err)
+	}
+	if err := d.Set("description", res["description"]); err != nil {
+		return fmt.Errorf("Error setting description: %s", err)
+	}
+	if err := d.Set("type", res["type"]); err != nil {
+		return fmt.Errorf("Error setting type: %s", err)
+	}
+	if err := d.Set("rule", flattenSecurityPolicyRules(res["rules"], d)); err != nil {
+		return err
+	}
+	if err := d.Set("fingerprint", res["fingerprint"]); err != nil {
+		return fmt.Errorf("Error setting fingerprint: %s", err)
+	}
+	if err := d.Set("project", project); err != nil {
+		return fmt.Errorf("Error setting project: %s", err)
+	}
+	selfLink, _ := res["selfLink"].(string)
+	if err := d.Set("self_link", tpgresource.ConvertSelfLinkToV1(selfLink)); err != nil {
+		return fmt.Errorf("Error setting self_link: %s", err)
+	}
+	if err := d.Set("advanced_options_config", flattenSecurityPolicyAdvancedOptionsConfig(res["advancedOptionsConfig"])); err != nil {
+		return fmt.Errorf("Error setting advanced_options_config: %s", err)
+	}
+
+	if err := d.Set("adaptive_protection_config", flattenSecurityPolicyAdaptiveProtectionConfig(res["adaptiveProtectionConfig"])); err != nil {
+		return fmt.Errorf("Error setting adaptive_protection_config: %s", err)
+	}
+
+	if err := d.Set("recaptcha_options_config", flattenSecurityPolicyRecaptchaOptionConfig(res["recaptchaOptionsConfig"])); err != nil {
+		return fmt.Errorf("Error setting recaptcha_options_config: %s", err)
+	}
+
+	var labels map[string]string
+	if rawLabels, ok := res["labels"].(map[string]interface{}); ok {
+		labels = make(map[string]string, len(rawLabels))
+		for k, v := range rawLabels {
+			labels[k] = v.(string)
+		}
+	}
+
+	if err := tpgresource.SetLabels(labels, d, "labels"); err != nil {
+		return err
+	}
+
+	if err := tpgresource.SetLabels(labels, d, "terraform_labels"); err != nil {
+		return err
+	}
+
+	if err := d.Set("effective_labels", labels); err != nil {
+		return err
+	}
+
+	if err := d.Set("label_fingerprint", res["labelFingerprint"]); err != nil {
+		return fmt.Errorf("Error setting label_fingerprint: %s", err)
+	}
+
+
+    if err := tpgresource.DeletionPolicyReadDefault(d, config, "DELETE"); err != nil{
+        return err
+    }
+
+	return nil
+}
+
+func resourceComputeSecurityPolicyUpdate(d *schema.ResourceData, meta interface{}) error {
+
+    if tpgresource.DeletionPolicyPreUpdate(d, ResourceComputeSecurityPolicy) {
+        return ResourceComputeSecurityPolicy().Read(d, meta)
+    }
+
+	config := meta.(*transport_tpg.Config)
+	userAgent, err :=  tpgresource.GenerateUserAgentString(d, config.UserAgent)
+	if err != nil {
+		return err
+	}
+
+	project, err := tpgresource.GetProject(d, config)
+	if err != nil {
+		return err
+	}
+
+	sp := d.Get("name").(string)
+
+	body := map[string]interface{}{
+		"fingerprint": d.Get("fingerprint").(string),
+	}
+
+	updateMask := []string{}
+	needsPatch := false
+
+	if d.HasChange("type") {
+		body["type"] = d.Get("type").(string)
+		needsPatch = true
+	}
+
+	if d.HasChange("description") {
+		body["description"] = d.Get("description").(string)
+		needsPatch = true
+	}
+
+	if d.HasChange("advanced_options_config") {
+		advancedConfig := expandSecurityPolicyAdvancedOptionsConfig(d.Get("advanced_options_config").([]interface{}))
+		body["advancedOptionsConfig"] = advancedConfig
+		needsPatch = true
+		if advancedConfig != nil {
+			headers, _ := advancedConfig["userIpRequestHeaders"].([]interface{})
+			if len(headers) == 0 {
+				updateMask = append(updateMask, "advanced_options_config.user_ip_request_headers")
+			}
+		}
+	}
+
+	if d.HasChange("adaptive_protection_config") {
+		body["adaptiveProtectionConfig"] = expandSecurityPolicyAdaptiveProtectionConfig(d.Get("adaptive_protection_config").([]interface{}))
+		needsPatch = true
+	}
+
+	if d.HasChange("recaptcha_options_config") {
+		body["recaptchaOptionsConfig"] = expandSecurityPolicyRecaptchaOptionsConfig(d.Get("recaptcha_options_config").([]interface{}), d)
+		needsPatch = true
+	}
+
+	if d.HasChange("effective_labels") {
+		labels := tpgresource.ExpandEffectiveLabels(d)
+		labelFingerprint := d.Get("label_fingerprint").(string)
+
+		res, err := transport_tpg.SendRequest(transport_tpg.SendRequestOptions{
+			Config:    config,
+			Method:    "POST",
+			Project:   project,
+			RawURL:    fmt.Sprintf("%sprojects/%s/global/securityPolicies/%s/setLabels", transport_tpg.BaseUrl(Product, config), project, sp),
+			UserAgent: userAgent,
+			Body: map[string]interface{}{
+				"labels":           labels,
+				"labelFingerprint": labelFingerprint,
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("Error updating labels: %s", err)
+		}
+
+		err = ComputeOperationWaitTime(config, res, project, "labels to update", userAgent, d.Timeout(schema.TimeoutUpdate))
+		if err != nil {
+			return err
+		}
+	}
+
+	if needsPatch {
+		patchURL := fmt.Sprintf("%sprojects/%s/global/securityPolicies/%s", transport_tpg.BaseUrl(Product, config), project, sp)
+		if len(updateMask) > 0 {
+			patchURL = fmt.Sprintf("%s?updateMask=%s", patchURL, strings.Join(updateMask, ","))
+		}
+
+		res, err := transport_tpg.SendRequest(transport_tpg.SendRequestOptions{
+			Config:    config,
+			Method:    "PATCH",
+			Project:   project,
+			RawURL:    patchURL,
+			UserAgent: userAgent,
+			Body:      body,
+		})
+		if err != nil {
+			return errwrap.Wrapf(fmt.Sprintf("Error updating SecurityPolicy %q: {{"{{"}}err{{"}}"}}", sp), err)
+		}
+
+		err = ComputeOperationWaitTime(config, res, project, fmt.Sprintf("Updating SecurityPolicy %q", sp), userAgent, d.Timeout(schema.TimeoutUpdate))
+		if err != nil {
+			return err
+		}
+	}
+
+	if d.HasChange("rule") {
+		o, n := d.GetChange("rule")
+		oSet := o.(*schema.Set)
+		nSet := n.(*schema.Set)
+
+		oPriorities := map[int64]bool{}
+		nPriorities := map[int64]bool{}
+		oRules := make(map[int64]map[string]interface{})
+		nRules := make(map[int64]map[string]interface{})
+
+		for _, rule := range oSet.List() {
+			oPriorities[int64(rule.(map[string]interface{})["priority"].(int))] = true
+			oRules[int64(rule.(map[string]interface{})["priority"].(int))] = rule.(map[string]interface{})
+		}
+
+		for _, rule := range nSet.List() {
+			nRules[int64(rule.(map[string]interface{})["priority"].(int))] = rule.(map[string]interface{})
+			priority := int64(rule.(map[string]interface{})["priority"].(int))
+			nPriorities[priority] = true
+
+			if !oPriorities[priority] {
+				// If the rule is in new and its priority does not exist in old, then add it.
+				res, err := transport_tpg.SendRequest(transport_tpg.SendRequestOptions{
+					Config:    config,
+					Method:    "POST",
+					Project:   project,
+					RawURL:    fmt.Sprintf("%sprojects/%s/global/securityPolicies/%s/addRule", transport_tpg.BaseUrl(Product, config), project, sp),
+					UserAgent: userAgent,
+					Body:      expandSecurityPolicyRule(rule),
+				})
+				if err != nil {
+					return errwrap.Wrapf(fmt.Sprintf("Error updating SecurityPolicy %q: {{"{{"}}err{{"}}"}}", sp), err)
+				}
+
+				err = ComputeOperationWaitTime(config, res, project, fmt.Sprintf("Updating SecurityPolicy %q", sp), userAgent, d.Timeout(schema.TimeoutUpdate))
+				if err != nil {
+					return err
+				}
+			} else if !oSet.Contains(rule) {
+
+				oMap := make(map[string]interface{})
+				nMap := make(map[string]interface{})
+
+				patchRuleUpdateMask := []string{}
+
+				if oRules[priority]["rate_limit_options"] != nil {
+					for _, oValue := range oRules[priority]["rate_limit_options"].([]interface{}) {
+						oMap = oValue.(map[string]interface{})
+					}
+				}
+
+				if nRules[priority]["rate_limit_options"] != nil {
+					for _, nValue := range nRules[priority]["rate_limit_options"].([]interface{}) {
+						nMap = nValue.(map[string]interface{})
+					}
+				}
+
+				if fmt.Sprintf("%v", oMap) != fmt.Sprintf("%v", nMap) {
+					patchRuleUpdateMask = append(patchRuleUpdateMask, "rate_limit_options")
+				}
+
+				if fmt.Sprintf("%v", oMap["enforce_on_key"]) != fmt.Sprintf("%v", nMap["enforce_on_key"]) {
+					patchRuleUpdateMask = append(patchRuleUpdateMask, "rate_limit_options.enforce_on_key")
+				}
+
+				if fmt.Sprintf("%v", oMap["enforce_on_key_configs"]) != fmt.Sprintf("%v", nMap["enforce_on_key_configs"]) {
+					patchRuleUpdateMask = append(patchRuleUpdateMask, "rate_limit_options.enforce_on_key_configs")
+				}
+
+				if fmt.Sprintf("%v", oMap["enforce_on_key_name"]) != fmt.Sprintf("%v", nMap["enforce_on_key_name"]) {
+					patchRuleUpdateMask = append(patchRuleUpdateMask, "rate_limit_options.enforce_on_key_name")
+				}
+
+			    // Detect changes to preconfigured_waf_config so that removing or clearing
+				// the block is propagated to the API. Without listing the field in the
+				// updateMask, the PatchRule call will not clear the existing value because
+				// the request body omits nil pointers.
+				if fmt.Sprintf("%v", oRules[priority]["preconfigured_waf_config"]) != fmt.Sprintf("%v", nRules[priority]["preconfigured_waf_config"]) {
+					patchRuleUpdateMask = append(patchRuleUpdateMask, "preconfigured_waf_config")
+				}
+
+				if fmt.Sprintf("%v", oRules[priority]["header_action"]) != fmt.Sprintf("%v", nRules[priority]["header_action"]) {
+					patchRuleUpdateMask = append(patchRuleUpdateMask, "header_action")
+				}
+
+				// If the rule is in new, and its priority is in old, but its hash is different than the one in old, update it.
+				patchRuleURL := fmt.Sprintf("%sprojects/%s/global/securityPolicies/%s/patchRule?priority=%d", transport_tpg.BaseUrl(Product, config), project, sp, priority)
+				if len(patchRuleUpdateMask) > 0 {
+					patchRuleURL = fmt.Sprintf("%s&updateMask=%s", patchRuleURL, strings.Join(patchRuleUpdateMask, ","))
+				}
+
+				res, err := transport_tpg.SendRequest(transport_tpg.SendRequestOptions{
+					Config:    config,
+					Method:    "POST",
+					Project:   project,
+					RawURL:    patchRuleURL,
+					UserAgent: userAgent,
+					Body:      expandSecurityPolicyRule(rule),
+				})
+				if err != nil {
+					return errwrap.Wrapf(fmt.Sprintf("Error updating SecurityPolicy %q: {{"{{"}}err{{"}}"}}", sp), err)
+				}
+
+				err = ComputeOperationWaitTime(config, res, project, fmt.Sprintf("Updating SecurityPolicy %q", sp), userAgent, d.Timeout(schema.TimeoutUpdate))
+				if err != nil {
+					return err
+				}
+			}
+		}
+
+		for _, rule := range oSet.List() {
+			priority := int64(rule.(map[string]interface{})["priority"].(int))
+			if !nPriorities[priority] {
+				// If the rule's priority is in old but not new, remove it.
+				res, err := transport_tpg.SendRequest(transport_tpg.SendRequestOptions{
+					Config:    config,
+					Method:    "POST",
+					Project:   project,
+					RawURL:    fmt.Sprintf("%sprojects/%s/global/securityPolicies/%s/removeRule?priority=%d", transport_tpg.BaseUrl(Product, config), project, sp, priority),
+					UserAgent: userAgent,
+					Body:      map[string]interface{}{},
+				})
+				if err != nil {
+					return errwrap.Wrapf(fmt.Sprintf("Error updating SecurityPolicy %q: {{"{{"}}err{{"}}"}}", sp), err)
+				}
+
+				err = ComputeOperationWaitTime(config, res, project, fmt.Sprintf("Updating SecurityPolicy %q", sp), userAgent, d.Timeout(schema.TimeoutUpdate))
+				if err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	return resourceComputeSecurityPolicyRead(d, meta)
+}
+
+func resourceComputeSecurityPolicyDelete(d *schema.ResourceData, meta interface{}) error {
+    
+    if ok, err := tpgresource.DeletionPolicyPreDelete(d); err != nil{
+        return err
+    }else if ok{
+        return nil
+    }
+
+    config :=  meta.(*transport_tpg.Config)
+	userAgent, err :=  tpgresource.GenerateUserAgentString(d, config.UserAgent)
+	if err != nil {
+		return err
+	}
+
+	project, err := tpgresource.GetProject(d, config)
+	if err != nil {
+		return err
+	}
+
+	// Delete the SecurityPolicy
+	res, err := transport_tpg.SendRequest(transport_tpg.SendRequestOptions{
+		Config:    config,
+		Method:    "DELETE",
+		Project:   project,
+		RawURL:    fmt.Sprintf("%sprojects/%s/global/securityPolicies/%s", transport_tpg.BaseUrl(Product, config), project, d.Get("name").(string)),
+		UserAgent: userAgent,
+	})
+	if err != nil {
+		return errwrap.Wrapf("Error deleting SecurityPolicy: {{"{{"}}err{{"}}"}}", err)
+	}
+
+	err = ComputeOperationWaitTime(config, res, project, "Deleting SecurityPolicy", userAgent, d.Timeout(schema.TimeoutDelete))
+	if err != nil {
+		return err
+	}
+
+	d.SetId("")
+	return nil
+}
+
+func expandSecurityPolicyRules(configured []interface{}) []interface{} {
+	rules := make([]interface{}, 0, len(configured))
+	for _, raw := range configured {
+		rules = append(rules, expandSecurityPolicyRule(raw))
+	}
+	return rules
+}
+
+func expandSecurityPolicyRule(raw interface{}) map[string]interface{} {
+	data := raw.(map[string]interface{})
+	rule := map[string]interface{}{
+		"priority": int64(data["priority"].(int)),
+		"action":   data["action"].(string),
+		"match":    expandSecurityPolicyMatch(data["match"].([]interface{})),
+	}
+	rule["description"] = data["description"].(string)
+	rule["preview"] = data["preview"].(bool)
+	if v := expandSecurityPolicyPreconfiguredWafConfig(data["preconfigured_waf_config"].([]interface{})); v != nil {
+		rule["preconfiguredWafConfig"] = v
+	}
+	if v := expandSecurityPolicyRuleRateLimitOptions(data["rate_limit_options"].([]interface{})); v != nil {
+		rule["rateLimitOptions"] = v
+	}
+	if v := expandSecurityPolicyRuleRedirectOptions(data["redirect_options"].([]interface{})); v != nil {
+		rule["redirectOptions"] = v
+	}
+	if v := expandSecurityPolicyRuleHeaderAction(data["header_action"].([]interface{})); len(v) > 0 {
+		rule["headerAction"] = v
+	}
+	return rule
+}
+
+func expandSecurityPolicyMatch(configured []interface{}) map[string]interface{} {
+	if len(configured) == 0 || configured[0] == nil {
+		return nil
+	}
+
+	data := configured[0].(map[string]interface{})
+	match := map[string]interface{}{
+		"versionedExpr": data["versioned_expr"].(string),
+	}
+	if v := expandSecurityPolicyMatchConfig(data["config"].([]interface{})); v != nil {
+		match["config"] = v
+	}
+	if v := expandSecurityPolicyMatchExpr(data["expr"].([]interface{})); v != nil {
+		match["expr"] = v
+	}
+	if v := expandSecurityPolicyMatchExprOptions(data["expr_options"].([]interface{})); v != nil {
+		match["exprOptions"] = v
+	}
+	return match
+}
+
+func expandSecurityPolicyMatchConfig(configured []interface{}) map[string]interface{} {
+	if len(configured) == 0 || configured[0] == nil {
+		return nil
+	}
+
+	data := configured[0].(map[string]interface{})
+	return map[string]interface{}{
+		"srcIpRanges": tpgresource.ConvertStringArr(data["src_ip_ranges"].(*schema.Set).List()),
+	}
+}
+
+func expandSecurityPolicyMatchExpr(expr []interface{}) map[string]interface{} {
+	if len(expr) == 0 || expr[0] == nil {
+		return nil
+	}
+
+	data := expr[0].(map[string]interface{})
+	return map[string]interface{}{
+		"expression": data["expression"].(string),
+		// These fields are not yet supported  (Issue hashicorp/terraform-provider-google#4497: mbang)
+		// "title":       data["title"].(string),
+		// "description": data["description"].(string),
+		// "location":    data["location"].(string),
+	}
+}
+
+func expandSecurityPolicyMatchExprOptions(exprOptions []interface{}) map[string]interface{} {
+	if len(exprOptions) == 0 || exprOptions[0] == nil {
+		return nil
+	}
+
+	data := exprOptions[0].(map[string]interface{})
+	return map[string]interface{}{
+		"recaptchaOptions": expandSecurityPolicyMatchExprOptionsRecaptchaOptions(data["recaptcha_options"].([]interface{})),
+	}
+}
+
+func expandSecurityPolicyMatchExprOptionsRecaptchaOptions(recaptchaOptions []interface{}) map[string]interface{} {
+	if len(recaptchaOptions) == 0 || recaptchaOptions[0] == nil {
+		return nil
+	}
+
+	data := recaptchaOptions[0].(map[string]interface{})
+
+  actionTokenKeysInterface := data["action_token_site_keys"].([]interface{})
+	actionTokenKeys := make([]string, len(actionTokenKeysInterface))
+	for i, v := range actionTokenKeysInterface {
+		actionTokenKeys[i] = v.(string)
+	}
+
+	sessionTokenKeysInterface := data["session_token_site_keys"].([]interface{})
+	sessionTokenKeys := make([]string, len(sessionTokenKeysInterface))
+	for i, v := range sessionTokenKeysInterface {
+		sessionTokenKeys[i] = v.(string)
+	}
+
+	return map[string]interface{}{
+		"actionTokenSiteKeys":  actionTokenKeys,
+		"sessionTokenSiteKeys": sessionTokenKeys,
+	}
+}
+
+func expandSecurityPolicyPreconfiguredWafConfig(configured []interface{}) map[string]interface{} {
+	if len(configured) == 0 || configured[0] == nil {
+		return nil
+	}
+
+	data := configured[0].(map[string]interface{})
+	return map[string]interface{}{
+		"exclusions": expandSecurityPolicyRulePreconfiguredWafConfigExclusions(data["exclusion"].([]interface{})),
+	}
+}
+
+func expandSecurityPolicyRulePreconfiguredWafConfigExclusions(configured []interface{}) []interface{} {
+	exclusions := make([]interface{}, 0, len(configured))
+	for _, raw := range configured {
+		exclusions = append(exclusions, expandSecurityPolicyRulePreconfiguredWafConfigExclusion(raw))
+	}
+	return exclusions
+}
+
+func expandSecurityPolicyRulePreconfiguredWafConfigExclusion(raw interface{}) map[string]interface{} {
+	data := raw.(map[string]interface{})
+	return map[string]interface{}{
+		"requestHeadersToExclude":     expandSecurityPolicyRulePreconfiguredWafConfigExclusionFieldParams(data["request_header"].([]interface{})),
+		"requestCookiesToExclude":     expandSecurityPolicyRulePreconfiguredWafConfigExclusionFieldParams(data["request_cookie"].([]interface{})),
+		"requestUrisToExclude":        expandSecurityPolicyRulePreconfiguredWafConfigExclusionFieldParams(data["request_uri"].([]interface{})),
+		"requestQueryParamsToExclude": expandSecurityPolicyRulePreconfiguredWafConfigExclusionFieldParams(data["request_query_param"].([]interface{})),
+		"targetRuleSet":               data["target_rule_set"].(string),
+		"targetRuleIds":               tpgresource.ConvertStringArr(data["target_rule_ids"].(*schema.Set).List()),
+	}
+}
+
+func expandSecurityPolicyRulePreconfiguredWafConfigExclusionFieldParams(configured []interface{}) []interface{} {
+	params := make([]interface{}, 0, len(configured))
+	for _, raw := range configured {
+		params = append(params, expandSecurityPolicyRulePreconfiguredWafConfigExclusionFieldParam(raw))
+	}
+	return params
+}
+
+func expandSecurityPolicyRulePreconfiguredWafConfigExclusionFieldParam(raw interface{}) map[string]interface{} {
+	data := raw.(map[string]interface{})
+	return map[string]interface{}{
+		"op":  data["operator"].(string),
+		"val": data["value"].(string),
+	}
+}
+
+func flattenSecurityPolicyRules(rawRules interface{}, d *schema.ResourceData) []map[string]interface{} {
+	rules, ok := rawRules.([]interface{})
+	if !ok {
+		return nil
+	}
+	rulesSchema := make([]map[string]interface{}, 0, len(rules))
+	for _, raw := range rules {
+		rule, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		priority := int(rule["priority"].(float64))
+		preview, _ := rule["preview"].(bool)
+		data := map[string]interface{}{
+			"description":              rule["description"],
+			"priority":                 priority,
+			"action":                   rule["action"],
+			"preview":                  preview,
+			"match":                    flattenMatch(rule["match"], d, priority),
+			"preconfigured_waf_config": flattenPreconfiguredWafConfig(rule["preconfiguredWafConfig"], d, priority),
+			"rate_limit_options":	      flattenSecurityPolicyRuleRateLimitOptions(rule["rateLimitOptions"]),
+			"redirect_options":         flattenSecurityPolicyRedirectOptions(rule["redirectOptions"]),
+			"header_action":            flattenSecurityPolicyRuleHeaderAction(rule["headerAction"]),
+		}
+		rulesSchema = append(rulesSchema, data)
+	}
+	return rulesSchema
+}
+
+func flattenMatch(rawMatch interface{}, d *schema.ResourceData, rulePriority int) []map[string]interface{} {
+	match, ok := rawMatch.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	data := map[string]interface{}{
+		"versioned_expr": match["versionedExpr"],
+		"config":         flattenMatchConfig(match["config"]),
+		"expr":           flattenMatchExpr(match["expr"]),
+		"expr_options":   flattenMatchExprOptions(match["exprOptions"], d, rulePriority),
+	}
+
+	return []map[string]interface{}{data}
+}
+
+func flattenMatchConfig(rawConf interface{}) []map[string]interface{} {
+	conf, ok := rawConf.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	srcIpRanges, _ := conf["srcIpRanges"].([]interface{})
+	data := map[string]interface{}{
+		"src_ip_ranges": schema.NewSet(schema.HashString, srcIpRanges),
+	}
+
+	return []map[string]interface{}{data}
+}
+
+func flattenMatchExprOptions(rawExprOptions interface{}, d *schema.ResourceData, rulePriority int) []map[string]interface{} {
+	exprOptions, ok := rawExprOptions.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	// The API can return an explicit entry `exprOptions` object, causing evaluation of the `recaptcha_options` settings to fail as it's nil: https://github.com/hashicorp/terraform-provider-google/issues/24334
+	// Explicitly check it's available and exit early if not.
+	rawRecaptcha, ok := exprOptions["recaptchaOptions"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	// The API can return an explicit empty rule causing an issue: https://github.com/hashicorp/terraform-provider-google/issues/16882#issuecomment-2474528447
+	// We check if the API is returning a empty non-null value then we find the current value for this field in the rule config and check if its empty.
+	actionTokenKeys, _ := rawRecaptcha["actionTokenSiteKeys"].([]interface{})
+	sessionTokenKeys, _ := rawRecaptcha["sessionTokenSiteKeys"].([]interface{})
+	if len(actionTokenKeys) == 0 && len(sessionTokenKeys) == 0 &&
+		verifyRulePriorityCompareEmptyValues(d, rulePriority, "recaptcha_options") {
+		return nil
+	}
+
+	data := map[string]interface{}{
+		// NOTE: when adding new entries, the recaptcha_options rule above will need to be revised
+		"recaptcha_options": flattenMatchExprOptionsRecaptchaOptions(rawRecaptcha),
+		// NOTE: when adding new entries, the recaptcha_options rule above will need to be revised
+	}
+
+	return []map[string]interface{}{data}
+}
+
+func flattenMatchExprOptionsRecaptchaOptions(rawRecaptchaOptions interface{}) []map[string]interface{} {
+	recaptchaOptions, ok := rawRecaptchaOptions.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	data := map[string]interface{}{
+		"action_token_site_keys":  recaptchaOptions["actionTokenSiteKeys"],
+		"session_token_site_keys": recaptchaOptions["sessionTokenSiteKeys"],
+	}
+
+	return []map[string]interface{}{data}
+}
+
+func flattenMatchExpr(rawExpr interface{}) []map[string]interface{} {
+	expr, ok := rawExpr.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	data := map[string]interface{}{
+		"expression": expr["expression"],
+		// These fields are not yet supported (Issue hashicorp/terraform-provider-google#4497: mbang)
+		// "title":       expr["title"],
+		// "description": expr["description"],
+		// "location":    expr["location"],
+	}
+
+	return []map[string]interface{}{data}
+}
+
+func flattenPreconfiguredWafConfig(rawConfig interface{}, d *schema.ResourceData, rulePriority int) []map[string]interface{} {
+	config, ok := rawConfig.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	// We check if the API is returning a empty non-null value then we find the current value for this field in the rule config and check if its empty
+	if preconfiguredWafConfigIsEmptyValue(config) && verifyRulePriorityCompareEmptyValues(d, rulePriority, "preconfigured_waf_config") {
+		return nil
+	}
+
+	data := map[string]interface{}{
+		"exclusion": flattenPreconfiguredWafConfigExclusions(config["exclusions"]),
+	}
+
+	return []map[string]interface{}{data}
+}
+
+func flattenPreconfiguredWafConfigExclusions(rawExclusions interface{}) []map[string]interface{} {
+	exclusions, ok := rawExclusions.([]interface{})
+	if !ok {
+		return nil
+	}
+	exclusionsSchema := make([]map[string]interface{}, 0, len(exclusions))
+	for _, raw := range exclusions {
+		exclusion, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		targetRuleIds, _ := exclusion["targetRuleIds"].([]interface{})
+		data := map[string]interface{}{
+			"request_header":      flattenPreconfiguredWafConfigExclusionField(exclusion["requestHeadersToExclude"]),
+			"request_cookie":      flattenPreconfiguredWafConfigExclusionField(exclusion["requestCookiesToExclude"]),
+			"request_uri":         flattenPreconfiguredWafConfigExclusionField(exclusion["requestUrisToExclude"]),
+			"request_query_param": flattenPreconfiguredWafConfigExclusionField(exclusion["requestQueryParamsToExclude"]),
+			"target_rule_set":     exclusion["targetRuleSet"],
+			"target_rule_ids":     schema.NewSet(schema.HashString, targetRuleIds),
+		}
+
+		exclusionsSchema = append(exclusionsSchema, data)
+	}
+	return exclusionsSchema
+}
+
+func flattenPreconfiguredWafConfigExclusionField(rawFieldParams interface{}) []map[string]interface{} {
+	fieldParams, ok := rawFieldParams.([]interface{})
+	if !ok {
+		return nil
+	}
+	fieldSchema := make([]map[string]interface{}, 0, len(fieldParams))
+	for _, raw := range fieldParams {
+		field, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		data := map[string]interface{}{
+			"operator": field["op"],
+			"value":    field["val"],
+		}
+		fieldSchema = append(fieldSchema, data)
+	}
+	return fieldSchema
+}
+
+func expandSecurityPolicyAdvancedOptionsConfig(configured []interface{}) map[string]interface{} {
+	if len(configured) == 0 || configured[0] == nil {
+		return nil
+	}
+
+	data := configured[0].(map[string]interface{})
+	result := map[string]interface{}{
+		"jsonParsing":          data["json_parsing"].(string),
+		"jsonCustomConfig":     expandSecurityPolicyAdvancedOptionsConfigJsonCustomConfig(data["json_custom_config"].([]interface{})),
+		"logLevel":             data["log_level"].(string),
+		"userIpRequestHeaders": tpgresource.ConvertStringArr(data["user_ip_request_headers"].(*schema.Set).List()),
+	}
+	if v := data["request_body_inspection_size"].(string); v != "" {
+		result["requestBodyInspectionSize"] = v
+	}
+	return result
+}
+
+func flattenSecurityPolicyAdvancedOptionsConfig(rawConf interface{}) []map[string]interface{} {
+	conf, ok := rawConf.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	userIpHeaders, _ := conf["userIpRequestHeaders"].([]interface{})
+	data := map[string]interface{}{
+		"json_parsing":                 conf["jsonParsing"],
+		"json_custom_config":           flattenSecurityPolicyAdvancedOptionsConfigJsonCustomConfig(conf["jsonCustomConfig"]),
+		"log_level":                    conf["logLevel"],
+		"user_ip_request_headers":      schema.NewSet(schema.HashString, userIpHeaders),
+		"request_body_inspection_size": conf["requestBodyInspectionSize"],
+	}
+
+	return []map[string]interface{}{data}
+}
+
+func expandSecurityPolicyAdvancedOptionsConfigJsonCustomConfig(configured []interface{}) map[string]interface{} {
+	if len(configured) == 0 || configured[0] == nil {
+		// If configuration is unset, return an empty map; this ensures the ContentTypes list can be cleared
+		return map[string]interface{}{}
+	}
+
+	data := configured[0].(map[string]interface{})
+	return map[string]interface{}{
+		"contentTypes": tpgresource.ConvertStringArr(data["content_types"].(*schema.Set).List()),
+	}
+}
+
+func flattenSecurityPolicyAdvancedOptionsConfigJsonCustomConfig(rawConf interface{}) []map[string]interface{} {
+	conf, ok := rawConf.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	contentTypes, _ := conf["contentTypes"].([]interface{})
+	data := map[string]interface{}{
+		"content_types": schema.NewSet(schema.HashString, contentTypes),
+	}
+
+	return []map[string]interface{}{data}
+}
+
+func expandSecurityPolicyAdaptiveProtectionConfig(configured []interface{}) map[string]interface{} {
+	if len(configured) == 0 || configured[0] == nil {
+		return nil
+	}
+
+	data := configured[0].(map[string]interface{})
+	result := map[string]interface{}{}
+	if v := expandLayer7DdosDefenseConfig(data["layer_7_ddos_defense_config"].([]interface{})); v != nil {
+		result["layer7DdosDefenseConfig"] = v
+	}
+	{{- if ne $.TargetVersionName "ga" }}
+	if v := expandAutoDeployConfig(data["auto_deploy_config"].([]interface{})); v != nil {
+		result["autoDeployConfig"] = v
+	}
+	{{- end }}
+	return result
+}
+
+func expandLayer7DdosDefenseConfig(configured []interface{}) map[string]interface{} {
+	if len(configured) == 0 || configured[0] == nil {
+		return nil
+	}
+
+	data := configured[0].(map[string]interface{})
+	result := map[string]interface{}{
+		"enable":         data["enable"].(bool),
+		"ruleVisibility": data["rule_visibility"].(string),
+	}
+	if v := expandThresholdConfigs(data["threshold_configs"].([]interface{})); len(v) > 0 {
+		result["thresholdConfigs"] = v
+	}
+	return result
+}
+
+func expandThresholdConfigs(configured []interface{}) []interface{} {
+	params := make([]interface{}, 0, len(configured))
+	for _, raw := range configured {
+		params = append(params, expandThresholdConfig(raw))
+	}
+	return params
+}
+
+func expandThresholdConfig(configured interface{}) map[string]interface{} {
+	data := configured.(map[string]interface{})
+	return map[string]interface{}{
+		"autoDeployConfidenceThreshold":       data["auto_deploy_confidence_threshold"].(float64),
+		"autoDeployExpirationSec":             int64(data["auto_deploy_expiration_sec"].(int)),
+		"autoDeployImpactedBaselineThreshold": data["auto_deploy_impacted_baseline_threshold"].(float64),
+		"autoDeployLoadThreshold":             data["auto_deploy_load_threshold"].(float64),
+		"detectionAbsoluteQps":                data["detection_absolute_qps"].(float64),
+		"detectionLoadThreshold":              data["detection_load_threshold"].(float64),
+		"detectionRelativeToBaselineQps":      data["detection_relative_to_baseline_qps"].(float64),
+		"name":                                data["name"].(string),
+		"trafficGranularityConfigs":           expandTrafficGranularityConfig(data["traffic_granularity_configs"].([]interface{})),
+	}
+}
+
+func expandTrafficGranularityConfig(configured []interface{}) []interface{} {
+	params := make([]interface{}, 0, len(configured))
+	for _, raw := range configured {
+		data := raw.(map[string]interface{})
+		params = append(params, map[string]interface{}{
+			"enableEachUniqueValue": data["enable_each_unique_value"].(bool),
+			"type":                  data["type"].(string),
+			"value":                 data["value"].(string),
+		})
+	}
+	return params
+}
+
+{{ if ne $.TargetVersionName `ga` -}}
+func expandAutoDeployConfig(configured []interface{}) map[string]interface{} {
+	if len(configured) == 0 || configured[0] == nil {
+		return nil
+	}
+
+	data := configured[0].(map[string]interface{})
+	return map[string]interface{}{
+		"loadThreshold":             data["load_threshold"].(float64),
+		"confidenceThreshold":       data["confidence_threshold"].(float64),
+		"impactedBaselineThreshold": data["impacted_baseline_threshold"].(float64),
+		"expirationSec":             int64(data["expiration_sec"].(int)),
+	}
+}
+{{- end }}
+
+func flattenSecurityPolicyAdaptiveProtectionConfig(rawConf interface{}) []map[string]interface{} {
+	conf, ok := rawConf.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	data := map[string]interface{}{
+		"layer_7_ddos_defense_config": flattenLayer7DdosDefenseConfig(conf["layer7DdosDefenseConfig"]),
+		{{- if ne $.TargetVersionName "ga" }}
+		"auto_deploy_config": flattenAutoDeployConfig(conf["autoDeployConfig"]),
+		{{- end }}
+	}
+
+	return []map[string]interface{}{data}
+}
+
+func flattenLayer7DdosDefenseConfig(rawConf interface{}) []map[string]interface{} {
+	conf, ok := rawConf.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	data := map[string]interface{}{
+		"enable":            conf["enable"],
+		"rule_visibility":   conf["ruleVisibility"],
+		"threshold_configs": flattenThresholdConfigs(conf["thresholdConfigs"]),
+	}
+
+	return []map[string]interface{}{data}
+}
+
+func flattenThresholdConfigs(rawConf interface{}) []map[string]interface{} {
+	conf, ok := rawConf.([]interface{})
+	if !ok {
+		return nil
+	}
+	configs := make([]map[string]interface{}, 0, len(conf))
+	for _, raw := range conf {
+		field, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		data := map[string]interface{}{
+			"name":                                    field["name"],
+			"auto_deploy_load_threshold":              field["autoDeployLoadThreshold"],
+			"auto_deploy_confidence_threshold":        field["autoDeployConfidenceThreshold"],
+			"auto_deploy_impacted_baseline_threshold": field["autoDeployImpactedBaselineThreshold"],
+			"auto_deploy_expiration_sec":              field["autoDeployExpirationSec"],
+			"detection_load_threshold":                field["detectionLoadThreshold"],
+			"detection_absolute_qps":                  field["detectionAbsoluteQps"],
+			"detection_relative_to_baseline_qps":      field["detectionRelativeToBaselineQps"],
+			"traffic_granularity_configs":             flattenTrafficGranularityConfigs(field["trafficGranularityConfigs"]),
+		}
+		configs = append(configs, data)
+	}
+	return configs
+}
+
+func flattenTrafficGranularityConfigs(rawConf interface{}) []map[string]interface{} {
+	conf, ok := rawConf.([]interface{})
+	if !ok {
+		return nil
+	}
+	configs := make([]map[string]interface{}, 0, len(conf))
+	for _, raw := range conf {
+		field, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		data := map[string]interface{}{
+			"type":                    field["type"],
+			"value":                   field["value"],
+			"enable_each_unique_value": field["enableEachUniqueValue"],
+		}
+		configs = append(configs, data)
+	}
+	return configs
+}
+
+{{ if ne $.TargetVersionName `ga` -}}
+func flattenAutoDeployConfig(rawConf interface{}) []map[string]interface{} {
+	conf, ok := rawConf.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	data := map[string]interface{}{
+		"load_threshold":              conf["loadThreshold"],
+		"confidence_threshold":        conf["confidenceThreshold"],
+		"impacted_baseline_threshold": conf["impactedBaselineThreshold"],
+		"expiration_sec":              conf["expirationSec"],
+	}
+
+	return []map[string]interface{}{data}
+}
+{{- end }}
+
+func expandSecurityPolicyRuleRateLimitOptions(configured []interface{}) map[string]interface{} {
+	if len(configured) == 0 || configured[0] == nil {
+		return nil
+	}
+
+	data := configured[0].(map[string]interface{})
+	opts := map[string]interface{}{
+		"exceedAction":        data["exceed_action"].(string),
+		"conformAction":       data["conform_action"].(string),
+		"enforceOnKey":        data["enforce_on_key"].(string),
+		"enforceOnKeyName":    data["enforce_on_key_name"].(string),
+		"enforceOnKeyConfigs": expandSecurityPolicyEnforceOnKeyConfigs(data["enforce_on_key_configs"].([]interface{})),
+	}
+	if v := int64(data["ban_duration_sec"].(int)); v != 0 {
+		opts["banDurationSec"] = v
+	}
+	if v := expandThreshold(data["ban_threshold"].([]interface{})); v != nil {
+		opts["banThreshold"] = v
+	}
+	if v := expandThreshold(data["rate_limit_threshold"].([]interface{})); v != nil {
+		opts["rateLimitThreshold"] = v
+	}
+	if v := expandSecurityPolicyRuleRedirectOptions(data["exceed_redirect_options"].([]interface{})); v != nil {
+		opts["exceedRedirectOptions"] = v
+	}
+	return opts
+}
+
+func expandThreshold(configured []interface{}) map[string]interface{} {
+	if len(configured) == 0 || configured[0] == nil {
+		return nil
+	}
+
+	data := configured[0].(map[string]interface{})
+	return map[string]interface{}{
+		"count":       int64(data["count"].(int)),
+		"intervalSec": int64(data["interval_sec"].(int)),
+	}
+}
+
+func expandSecurityPolicyEnforceOnKeyConfigs(configured []interface{}) []interface{} {
+	params := make([]interface{}, 0, len(configured))
+
+	for _, raw := range configured {
+		params = append(params, expandSecurityPolicyEnforceOnKeyConfigsFields(raw))
+	}
+
+	return params
+}
+
+func expandSecurityPolicyEnforceOnKeyConfigsFields(raw interface{}) map[string]interface{} {
+	data := raw.(map[string]interface{})
+
+	return map[string]interface{}{
+		"enforceOnKeyType": data["enforce_on_key_type"].(string),
+		"enforceOnKeyName": data["enforce_on_key_name"].(string),
+	}
+}
+
+func flattenSecurityPolicyRuleRateLimitOptions(rawConf interface{}) []map[string]interface{} {
+	conf, ok := rawConf.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	data := map[string]interface{}{
+		"ban_threshold":           flattenThreshold(conf["banThreshold"]),
+		"rate_limit_threshold":    flattenThreshold(conf["rateLimitThreshold"]),
+		"exceed_action":           conf["exceedAction"],
+		"conform_action":          conf["conformAction"],
+		"enforce_on_key":          conf["enforceOnKey"],
+		"enforce_on_key_name":     conf["enforceOnKeyName"],
+		"enforce_on_key_configs":  flattenSecurityPolicyEnforceOnKeyConfigs(conf["enforceOnKeyConfigs"]),
+		"ban_duration_sec":        conf["banDurationSec"],
+		"exceed_redirect_options": flattenSecurityPolicyRedirectOptions(conf["exceedRedirectOptions"]),
+	}
+
+	return []map[string]interface{}{data}
+}
+
+func flattenThreshold(rawConf interface{}) []map[string]interface{} {
+	conf, ok := rawConf.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	data := map[string]interface{}{
+		"count":        conf["count"],
+		"interval_sec": conf["intervalSec"],
+	}
+
+	return []map[string]interface{}{data}
+}
+
+func expandSecurityPolicyRuleRedirectOptions(configured []interface{}) map[string]interface{} {
+	if len(configured) == 0 || configured[0] == nil {
+		return nil
+	}
+
+	data := configured[0].(map[string]interface{})
+	return map[string]interface{}{
+		"type":   data["type"].(string),
+		"target": data["target"].(string),
+	}
+}
+
+func flattenSecurityPolicyEnforceOnKeyConfigs(rawConf interface{}) []map[string]interface{} {
+	conf, ok := rawConf.([]interface{})
+	if !ok || len(conf) == 0 {
+		return nil
+	}
+
+	transformed := make([]map[string]interface{}, 0, len(conf))
+	for _, raw := range conf {
+		transformed = append(transformed, flattenSecurityPolicyEnforceOnKeyConfigsFields(raw))
+	}
+	return transformed
+}
+
+func flattenSecurityPolicyEnforceOnKeyConfigsFields(rawConf interface{}) map[string]interface{} {
+	conf, ok := rawConf.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	return map[string]interface{}{
+		"enforce_on_key_name": conf["enforceOnKeyName"],
+		"enforce_on_key_type": conf["enforceOnKeyType"],
+	}
+}
+
+func flattenSecurityPolicyRedirectOptions(rawConf interface{}) []map[string]interface{} {
+	conf, ok := rawConf.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	data := map[string]interface{}{
+		"type":   conf["type"],
+		"target": conf["target"],
+	}
+
+	return []map[string]interface{}{data}
+}
+
+func expandSecurityPolicyRecaptchaOptionsConfig(configured []interface{}, d *schema.ResourceData) map[string]interface{} {
+	if len(configured) == 0 || configured[0] == nil {
+		return nil
+	}
+
+	data := configured[0].(map[string]interface{})
+
+	return map[string]interface{}{
+		"redirectSiteKey": data["redirect_site_key"].(string),
+	}
+}
+
+func flattenSecurityPolicyRecaptchaOptionConfig(rawConf interface{}) []map[string]interface{} {
+	conf, ok := rawConf.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	data := map[string]interface{}{
+		"redirect_site_key": conf["redirectSiteKey"],
+	}
+
+	return []map[string]interface{}{data}
+}
+
+func expandSecurityPolicyRuleHeaderAction(configured []interface{}) map[string]interface{} {
+	if len(configured) == 0 || configured[0] == nil {
+		// If header action is unset, return an empty map; this ensures the header action can be cleared
+		return map[string]interface{}{}
+	}
+
+	data := configured[0].(map[string]interface{})
+
+	return map[string]interface{}{
+		"requestHeadersToAdds": expandSecurityPolicyRequestHeadersToAdds(data["request_headers_to_adds"].([]interface{})),
+	}
+}
+
+func expandSecurityPolicyRequestHeadersToAdds(configured []interface{}) []interface{} {
+	transformed := make([]interface{}, 0, len(configured))
+
+	for _, raw := range configured {
+		transformed = append(transformed, expandSecurityPolicyRequestHeader(raw))
+	}
+
+	return transformed
+}
+
+func expandSecurityPolicyRequestHeader(configured interface{}) map[string]interface{} {
+	data := configured.(map[string]interface{})
+
+	return map[string]interface{}{
+		"headerName":  data["header_name"].(string),
+		"headerValue": data["header_value"].(string),
+	}
+}
+
+func flattenSecurityPolicyRuleHeaderAction(rawConf interface{}) []map[string]interface{} {
+	conf, ok := rawConf.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	if conf["requestHeadersToAdds"] == nil {
+		return nil
+	}
+
+	transformed := map[string]interface{}{
+		"request_headers_to_adds": flattenSecurityPolicyRequestHeadersToAdds(conf["requestHeadersToAdds"]),
+	}
+
+	return []map[string]interface{}{transformed}
+}
+
+func flattenSecurityPolicyRequestHeadersToAdds(rawConf interface{}) []map[string]interface{} {
+	conf, ok := rawConf.([]interface{})
+	if !ok || len(conf) == 0 {
+		return nil
+	}
+
+	transformed := make([]map[string]interface{}, 0, len(conf))
+	for _, raw := range conf {
+		transformed = append(transformed, flattenSecurityPolicyRequestHeader(raw))
+	}
+
+	return transformed
+}
+
+func flattenSecurityPolicyRequestHeader(rawConf interface{}) map[string]interface{} {
+	conf, ok := rawConf.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	return map[string]interface{}{
+		"header_name":  conf["headerName"],
+		"header_value": conf["headerValue"],
+	}
+}
+
+func resourceSecurityPolicyStateImporter(d *schema.ResourceData, meta interface{}) ([]*schema.ResourceData, error) {
+	config := meta.(*transport_tpg.Config)
+	if err := tpgresource.ParseImportId([]string{"projects/(?P<project>[^/]+)/global/securityPolicies/(?P<name>[^/]+)", "(?P<project>[^/]+)/(?P<name>[^/]+)", "(?P<name>[^/]+)"}, d, config); err != nil {
+		return nil, err
+	}
+
+	// Replace import id for the resource id
+	id, err := tpgresource.ReplaceVars(d, config, "projects/{{"{{"}}project{{"}}"}}/global/securityPolicies/{{"{{"}}name{{"}}"}}")
+	if err != nil {
+		return nil, fmt.Errorf("Error constructing id: %s", err)
+	}
+	d.SetId(id)
+
+	return []*schema.ResourceData{d}, nil
+}
+
+func init() {
+	registry.Schema{
+		Name: "google_compute_security_policy",
+		ProductName: "compute",
+		Type: registry.SchemaTypeResource,
+		Schema: ResourceComputeSecurityPolicy(),
+	}.Register()
+}

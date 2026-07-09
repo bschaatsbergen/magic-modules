@@ -1,6 +1,6 @@
 [
   {
-    "name": "//run.googleapis.com/projects/{{.Provider.project}}/locations/us-central1/DomainMappings/tf-test-domain-meep.gcp.tfacc.hashicorptest.com",
+    "name": "//run.googleapis.com/projects/{{.Provider.project}}/locations/us-central1/domainmappings/tf-test-domain-meep.gcp.tfacc.hashicorptest.com",
     "asset_type": "run.googleapis.com/DomainMapping",
     "ancestry_path": "{{.Ancestry}}/project/{{.Provider.project}}",
     "resource": {
@@ -12,6 +12,9 @@
         "apiVersion": "domains.cloudrun.com/v1",
         "kind": "DomainMapping",
         "metadata": {
+          "labels": {
+            "goog-terraform-provisioned": "true"
+          },
           "name": "tf-test-domain-meep.gcp.tfacc.hashicorptest.com",
           "namespace": "{{.Provider.project}}"
         },
@@ -36,6 +39,9 @@
         "kind": "Service",
         "metadata": {
           "name": "tf-test-cloudrun-srv-beep",
+          "labels": {
+            "goog-terraform-provisioned": "true"
+          },
           "namespace": "{{.Provider.project}}"
         },
         "spec": {

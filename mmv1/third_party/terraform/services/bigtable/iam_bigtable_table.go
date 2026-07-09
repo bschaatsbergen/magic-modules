@@ -3,6 +3,7 @@ package bigtable
 import (
 	"fmt"
 
+	"github.com/hashicorp/terraform-provider-google/google/registry"
 	"github.com/hashicorp/terraform-provider-google/google/tpgiamresource"
 	"github.com/hashicorp/terraform-provider-google/google/tpgresource"
 	transport_tpg "github.com/hashicorp/terraform-provider-google/google/transport"
@@ -14,7 +15,7 @@ import (
 )
 
 var IamBigtableTableSchema = map[string]*schema.Schema{
-	"instance": {
+	"instance_name": {
 		Type:     schema.TypeString,
 		Required: true,
 		ForceNew: true,
@@ -33,11 +34,11 @@ var IamBigtableTableSchema = map[string]*schema.Schema{
 }
 
 type BigtableTableIamUpdater struct {
-	project  string
-	instance string
-	table    string
-	d        tpgresource.TerraformResourceData
-	Config   *transport_tpg.Config
+	project      string
+	instanceName string
+	table        string
+	d            tpgresource.TerraformResourceData
+	Config       *transport_tpg.Config
 }
 
 func NewBigtableTableUpdater(d tpgresource.TerraformResourceData, config *transport_tpg.Config) (tpgiamresource.ResourceIamUpdater, error) {
@@ -51,18 +52,18 @@ func NewBigtableTableUpdater(d tpgresource.TerraformResourceData, config *transp
 	}
 
 	return &BigtableTableIamUpdater{
-		project:  project,
-		instance: d.Get("instance").(string),
-		table:    d.Get("table").(string),
-		d:        d,
-		Config:   config,
+		project:      project,
+		instanceName: d.Get("instance_name").(string),
+		table:        d.Get("table").(string),
+		d:            d,
+		Config:       config,
 	}, nil
 }
 
 func BigtableTableIdParseFunc(d *schema.ResourceData, config *transport_tpg.Config) error {
 	values := make(map[string]string)
 
-	m, err := tpgresource.GetImportIdQualifiers([]string{"projects/(?P<project>[^/]+)/instances/(?P<instance>[^/]+)/tables/(?P<table>[^/]+)"}, d, config, d.Id())
+	m, err := tpgresource.GetImportIdQualifiers([]string{"projects/(?P<project>[^/]+)/instances/(?P<instance_name>[^/]+)/tables/(?P<table>[^/]+)"}, d, config, d.Id())
 	if err != nil {
 		return err
 	}
@@ -77,7 +78,7 @@ func BigtableTableIdParseFunc(d *schema.ResourceData, config *transport_tpg.Conf
 		return fmt.Errorf("Error setting project: %s", err)
 	}
 
-	if err := d.Set("instance", values["instance"]); err != nil {
+	if err := d.Set("instance_name", values["instance_name"]); err != nil {
 		return fmt.Errorf("Error setting instance: %s", err)
 	}
 
@@ -86,7 +87,7 @@ func BigtableTableIdParseFunc(d *schema.ResourceData, config *transport_tpg.Conf
 	}
 
 	// Explicitly set the id so imported resources have the same ID format as non-imported ones.
-	d.SetId(fmt.Sprintf("projects/%s/instances/%s/tables/%s", project, values["instance"], values["table"]))
+	d.SetId(fmt.Sprintf("projects/%s/instances/%s/tables/%s", project, values["instance_name"], values["table"]))
 	return nil
 }
 
@@ -98,7 +99,7 @@ func (u *BigtableTableIamUpdater) GetResourceIamPolicy() (*cloudresourcemanager.
 		return nil, err
 	}
 
-	p, err := u.Config.NewBigTableProjectsInstancesTablesClient(userAgent).GetIamPolicy(u.GetResourceId(), req).Do()
+	p, err := NewProjectsInstancesTablesClient(u.Config, userAgent).GetIamPolicy(u.GetResourceId(), req).Do()
 	if err != nil {
 		return nil, errwrap.Wrapf(fmt.Sprintf("Error retrieving IAM policy for %s: {{err}}", u.DescribeResource()), err)
 	}
@@ -124,7 +125,7 @@ func (u *BigtableTableIamUpdater) SetResourceIamPolicy(policy *cloudresourcemana
 		return err
 	}
 
-	_, err = u.Config.NewBigTableProjectsInstancesTablesClient(userAgent).SetIamPolicy(u.GetResourceId(), req).Do()
+	_, err = NewProjectsInstancesTablesClient(u.Config, userAgent).SetIamPolicy(u.GetResourceId(), req).Do()
 	if err != nil {
 		return errwrap.Wrapf(fmt.Sprintf("Error setting IAM policy for %s: {{err}}", u.DescribeResource()), err)
 	}
@@ -133,13 +134,40 @@ func (u *BigtableTableIamUpdater) SetResourceIamPolicy(policy *cloudresourcemana
 }
 
 func (u *BigtableTableIamUpdater) GetResourceId() string {
-	return fmt.Sprintf("projects/%s/instances/%s/tables/%s", u.project, u.instance, u.table)
+	return fmt.Sprintf("projects/%s/instances/%s/tables/%s", u.project, u.instanceName, u.table)
 }
 
 func (u *BigtableTableIamUpdater) GetMutexKey() string {
-	return fmt.Sprintf("iam-bigtable-instance-%s-%s-%s", u.project, u.instance, u.table)
+	return fmt.Sprintf("iam-bigtable-instance-%s-%s-%s", u.project, u.instanceName, u.table)
 }
 
 func (u *BigtableTableIamUpdater) DescribeResource() string {
-	return fmt.Sprintf("Bigtable Table %s/%s-%s", u.project, u.instance, u.table)
+	return fmt.Sprintf("Bigtable Table %s/%s-%s", u.project, u.instanceName, u.table)
+}
+
+func init() {
+	registry.Schema{
+		Name:        "google_bigtable_table_iam_member",
+		ProductName: "bigtable",
+		Type:        registry.SchemaTypeIAMResource,
+		Schema:      tpgiamresource.ResourceIamMember(IamBigtableTableSchema, NewBigtableTableUpdater, BigtableTableIdParseFunc, tpgiamresource.IamWithStateUpgraders(BigtableTableIamStateUpgraders), tpgiamresource.IamWithSchemaVersion(1)),
+	}.Register()
+	registry.Schema{
+		Name:        "google_bigtable_table_iam_binding",
+		ProductName: "bigtable",
+		Type:        registry.SchemaTypeIAMResource,
+		Schema:      tpgiamresource.ResourceIamBinding(IamBigtableTableSchema, NewBigtableTableUpdater, BigtableTableIdParseFunc, tpgiamresource.IamWithStateUpgraders(BigtableTableIamStateUpgraders), tpgiamresource.IamWithSchemaVersion(1)),
+	}.Register()
+	registry.Schema{
+		Name:        "google_bigtable_table_iam_policy",
+		ProductName: "bigtable",
+		Type:        registry.SchemaTypeIAMResource,
+		Schema:      tpgiamresource.ResourceIamPolicy(IamBigtableTableSchema, NewBigtableTableUpdater, BigtableTableIdParseFunc, tpgiamresource.IamWithStateUpgraders(BigtableTableIamStateUpgraders), tpgiamresource.IamWithSchemaVersion(1)),
+	}.Register()
+	registry.Schema{
+		Name:        "google_bigtable_table_iam_policy",
+		ProductName: "bigtable",
+		Type:        registry.SchemaTypeIAMDataSource,
+		Schema:      tpgiamresource.DataSourceIamPolicy(IamBigtableTableSchema, NewBigtableTableUpdater),
+	}.Register()
 }

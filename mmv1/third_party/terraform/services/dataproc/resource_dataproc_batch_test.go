@@ -1,0 +1,154 @@
+package dataproc_test
+
+import (
+	"fmt"
+	"log"
+	"testing"
+	"time"
+
+	"github.com/hashicorp/terraform-provider-google/google/envvar"
+	tpgcompute "github.com/hashicorp/terraform-provider-google/google/services/compute"
+	"github.com/hashicorp/terraform-provider-google/google/services/dataproc"
+	transport_tpg "github.com/hashicorp/terraform-provider-google/google/transport"
+)
+
+func TestCloudDataprocBatchRuntimeConfigVersionDiffSuppress(t *testing.T) {
+	cases := map[string]struct {
+		Old, New           string
+		ExpectDiffSuppress bool
+	}{
+		"old version is empty, new version has a value": {
+			Old:                "",
+			New:                "2.2.100",
+			ExpectDiffSuppress: false,
+		},
+		"old version is the prefix of the new version": {
+			Old:                "2.2",
+			New:                "2.2.100",
+			ExpectDiffSuppress: true,
+		},
+		"old version is not the prefix of the new version": {
+			Old:                "2.1",
+			New:                "2.2.100",
+			ExpectDiffSuppress: false,
+		},
+		"new version is empty, old version has a value": {
+			Old:                "2.2.100",
+			New:                "",
+			ExpectDiffSuppress: false,
+		},
+		"new version is the prefix of the old version": {
+			Old:                "2.2.100",
+			New:                "2.2",
+			ExpectDiffSuppress: true,
+		},
+		"new version is not the prefix of the old version": {
+			Old:                "2.2.100",
+			New:                "2.1",
+			ExpectDiffSuppress: false,
+		},
+		"old version is the same with the new version": {
+			Old:                "2.2.100",
+			New:                "2.2.100",
+			ExpectDiffSuppress: true,
+		},
+		"both new version and old version are empty string": {
+			Old:                "",
+			New:                "",
+			ExpectDiffSuppress: true,
+		},
+	}
+
+	for tn, tc := range cases {
+		if dataproc.CloudDataprocBatchRuntimeConfigVersionDiffSuppressFunc(tc.Old, tc.New) != tc.ExpectDiffSuppress {
+			t.Errorf("bad: %s, %q => %q expect DiffSuppress to return %t", tn, tc.Old, tc.New, tc.ExpectDiffSuppress)
+		}
+	}
+}
+
+func BootstrapSubnetForDataprocBatches(t *testing.T, subnetName string, networkName string) string {
+	subnetOptions := map[string]interface{}{
+		"privateIpGoogleAccess": true,
+	}
+	return tpgcompute.BootstrapSubnetWithOverrides(t, subnetName, networkName, subnetOptions)
+}
+
+func BootstrapSubnetWithFirewallForDataprocBatches(t *testing.T, testId string, subnetName string) string {
+	networkName := tpgcompute.BootstrapSharedTestNetwork(t, testId)
+	subnetworkName := BootstrapSubnetForDataprocBatches(t, subnetName, networkName)
+	BootstrapFirewallForDataprocSharedNetwork(t, subnetName, networkName)
+	return subnetworkName
+}
+
+// The default network within GCP already comes pre configured with
+// certain firewall rules open to allow internal communication. As we
+// are boostrapping a network for dataproc tests, we need to additionally
+// open up similar rules to allow the nodes to talk to each other
+// internally as part of their configuration or this will just hang.
+const SharedTestFirewallPrefix = "tf-bootstrap-firewall-"
+
+func BootstrapFirewallForDataprocSharedNetwork(t *testing.T, firewallName string, networkName string) string {
+	project := envvar.GetTestProjectFromEnv()
+	firewallName = SharedTestFirewallPrefix + firewallName
+
+	config := transport_tpg.BootstrapConfig(t)
+	if config == nil {
+		return ""
+	}
+
+	log.Printf("[DEBUG] Getting Firewall %q for Network %q", firewallName, networkName)
+	_, err := tpgcompute.NewClient(config, config.UserAgent).Firewalls.Get(project, firewallName).Do()
+	if err != nil && transport_tpg.IsGoogleApiErrorWithCode(err, 404) {
+		log.Printf("[DEBUG] firewallName %q not found, bootstrapping", firewallName)
+		url := fmt.Sprintf("%sprojects/%s/global/firewalls", transport_tpg.BaseUrl(tpgcompute.Product, config), project)
+
+		networkId := fmt.Sprintf("projects/%s/global/networks/%s", project, networkName)
+		allowObj := []interface{}{
+			map[string]interface{}{
+				"IPProtocol": "icmp",
+			},
+			map[string]interface{}{
+				"IPProtocol": "tcp",
+				"ports":      []string{"0-65535"},
+			},
+			map[string]interface{}{
+				"IPProtocol": "udp",
+				"ports":      []string{"0-65535"},
+			},
+		}
+
+		firewallObj := map[string]interface{}{
+			"name":    firewallName,
+			"network": networkId,
+			"allowed": allowObj,
+		}
+
+		res, err := transport_tpg.SendRequest(transport_tpg.SendRequestOptions{
+			Config:    config,
+			Method:    "POST",
+			Project:   project,
+			RawURL:    url,
+			UserAgent: config.UserAgent,
+			Body:      firewallObj,
+			Timeout:   4 * time.Minute,
+		})
+		if err != nil {
+			t.Fatalf("Error bootstrapping Firewall %q for Network %q: %s", firewallName, networkName, err)
+		}
+
+		log.Printf("[DEBUG] Waiting for Firewall creation to finish")
+		err = tpgcompute.ComputeOperationWaitTime(config, res, project, "Error bootstrapping Firewall", config.UserAgent, 4*time.Minute)
+		if err != nil {
+			t.Fatalf("Error bootstrapping Firewall %q: %s", firewallName, err)
+		}
+	}
+
+	firewall, err := tpgcompute.NewClient(config, config.UserAgent).Firewalls.Get(project, firewallName).Do()
+	if err != nil {
+		t.Errorf("Error getting Firewall %q: %s", firewallName, err)
+	}
+	if firewall == nil {
+		t.Fatalf("Error getting Firewall %q: is nil", firewallName)
+	}
+	return firewall.Name
+}

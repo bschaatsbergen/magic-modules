@@ -6,13 +6,15 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-provider-google/google/acctest"
+	tpgcompute "github.com/hashicorp/terraform-provider-google/google/services/compute"
+	_ "github.com/hashicorp/terraform-provider-google/google/services/container"
 )
 
 func TestAccContainerClusterDatasource_zonal(t *testing.T) {
 	t.Parallel()
 
-	networkName := acctest.BootstrapSharedTestNetwork(t, "gke-cluster")
-	subnetworkName := acctest.BootstrapSubnet(t, "gke-cluster", networkName)
+	networkName := tpgcompute.BootstrapSharedTestNetwork(t, "gke-cluster")
+	subnetworkName := tpgcompute.BootstrapSubnet(t, "gke-cluster", networkName)
 
 	acctest.VcrTest(t, resource.TestCase{
 		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
@@ -24,13 +26,7 @@ func TestAccContainerClusterDatasource_zonal(t *testing.T) {
 					acctest.CheckDataSourceStateMatchesResourceStateWithIgnores(
 						"data.google_container_cluster.kubes",
 						"google_container_cluster.kubes",
-						// Remove once https://github.com/hashicorp/terraform/issues/21347 is fixed.
-						map[string]struct{}{
-							"enable_autopilot":             {},
-							"enable_tpu":                   {},
-							"pod_security_policy_config.#": {},
-							"deletion_protection":          {},
-						},
+						[]string{"deletion_protection"},
 					),
 				),
 			},
@@ -41,8 +37,8 @@ func TestAccContainerClusterDatasource_zonal(t *testing.T) {
 func TestAccContainerClusterDatasource_regional(t *testing.T) {
 	t.Parallel()
 
-	networkName := acctest.BootstrapSharedTestNetwork(t, "gke-cluster")
-	subnetworkName := acctest.BootstrapSubnet(t, "gke-cluster", networkName)
+	networkName := tpgcompute.BootstrapSharedTestNetwork(t, "gke-cluster")
+	subnetworkName := tpgcompute.BootstrapSubnet(t, "gke-cluster", networkName)
 
 	acctest.VcrTest(t, resource.TestCase{
 		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
@@ -54,13 +50,9 @@ func TestAccContainerClusterDatasource_regional(t *testing.T) {
 					acctest.CheckDataSourceStateMatchesResourceStateWithIgnores(
 						"data.google_container_cluster.kubes",
 						"google_container_cluster.kubes",
-						// Remove once https://github.com/hashicorp/terraform/issues/21347 is fixed.
-						map[string]struct{}{
-							"enable_autopilot":             {},
-							"enable_tpu":                   {},
-							"pod_security_policy_config.#": {},
-							"deletion_protection":          {},
-							"resource_labels.%":            {},
+						[]string{
+							"deletion_protection",
+							"resource_labels.%",
 						},
 					),
 				),
@@ -75,10 +67,11 @@ resource "google_container_cluster" "kubes" {
   name               = "tf-test-cluster-%s"
   location           = "us-central1-a"
   initial_node_count = 1
-  deletion_protection = false
-  network    = "%s"
-  subnetwork    = "%s"
 
+  network    = "%s"
+  subnetwork = "%s"
+
+  deletion_protection = false
 }
 
 data "google_container_cluster" "kubes" {
@@ -94,12 +87,13 @@ resource "google_container_cluster" "kubes" {
   name               = "tf-test-cluster-%s"
   location           = "us-central1"
   initial_node_count = 1
-  deletion_protection = false
-  network    = "%s"
-  subnetwork    = "%s"
   resource_labels = {
     created-by = "terraform"
   }
+  network    = "%s"
+  subnetwork = "%s"
+
+  deletion_protection = false
 }
 
 data "google_container_cluster" "kubes" {

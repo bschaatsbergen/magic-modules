@@ -8,8 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hashicorp/go-cty/cty"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	"github.com/hashicorp/terraform-provider-google/google/registry"
 	transport_tpg "github.com/hashicorp/terraform-provider-google/google/transport"
 )
 
@@ -17,6 +19,7 @@ type ResourceDataMock struct {
 	FieldsInSchema      map[string]interface{}
 	FieldsWithHasChange []string
 	id                  string
+	identity            *schema.IdentityData
 }
 
 func (d *ResourceDataMock) HasChange(key string) bool {
@@ -71,6 +74,10 @@ func (d *ResourceDataMock) GetProviderMeta(dst interface{}) error {
 	return nil
 }
 
+func (d *ResourceDataMock) Identity() (*schema.IdentityData, error) {
+	return d.identity, nil
+}
+
 func (d *ResourceDataMock) Timeout(key string) time.Duration {
 	return time.Duration(1)
 }
@@ -79,7 +86,10 @@ type ResourceDiffMock struct {
 	Before     map[string]interface{}
 	After      map[string]interface{}
 	Cleared    map[string]interface{}
+	Schema     map[string]*schema.Schema
 	IsForceNew bool
+	RawConfig  cty.Value
+	KeysPrefix []string
 }
 
 func (d *ResourceDiffMock) GetChange(key string) (interface{}, interface{}) {
@@ -110,6 +120,32 @@ func (d *ResourceDiffMock) Clear(key string) error {
 
 func (d *ResourceDiffMock) ForceNew(key string) error {
 	d.IsForceNew = true
+	return nil
+}
+
+func (d *ResourceDiffMock) SetNew(key string, value interface{}) error {
+	if len(d.Schema) > 0 {
+		if err := d.checkKey(key, "SetNew"); err != nil {
+			return err
+		}
+	}
+
+	d.After[key] = value
+	return nil
+}
+
+func (d *ResourceDiffMock) checkKey(key, caller string) error {
+	var schema *schema.Schema
+	s, ok := d.Schema[key]
+	if ok {
+		schema = s
+	}
+	if schema == nil {
+		return fmt.Errorf("%s: invalid key: %s", caller, key)
+	}
+	if !schema.Computed {
+		return fmt.Errorf("%s only operates on computed keys - %s is not one", caller, key)
+	}
 	return nil
 }
 
@@ -147,7 +183,12 @@ func ReplaceVarsForTest(config *transport_tpg.Config, rs *terraform.ResourceStat
 			return v
 		}
 
-		// Attempt to draw values from the provider config
+		// Draw base path values from the provider config. For other config fields, fall back to reflection.
+		if pName, found := strings.CutSuffix(m, "BasePath"); found {
+			// the field will look like ComputeBasePath, but the product name will be like compute (just lowercase, no underscores)
+			p := registry.GetProduct(strings.ToLower(pName))
+			return transport_tpg.BaseUrl(p, config)
+		}
 		if f := reflect.Indirect(reflect.ValueOf(config)).FieldByName(m); f.IsValid() {
 			return f.String()
 		}
@@ -157,6 +198,10 @@ func ReplaceVarsForTest(config *transport_tpg.Config, rs *terraform.ResourceStat
 
 	return re.ReplaceAllStringFunc(linkTmpl, replaceFunc), nil
 }
+
+// These methods are required by some mappers but we don't actually have (or need)
+// implementations for them.
+func (d *ResourceDataMock) GetRawConfig() cty.Value { return cty.NullVal(cty.String) }
 
 // Used to create populated schema.ResourceData structs in tests.
 // Pass in a schema and a config map containing the fields and values you wish to set
@@ -191,4 +236,11 @@ func GetResourceAttributes(n string, s *terraform.State) (map[string]string, err
 	}
 
 	return rs.Primary.Attributes, nil
+}
+
+func (d *ResourceDiffMock) GetChangedKeysPrefix(prefix string) []string {
+	return d.KeysPrefix
+}
+func (d *ResourceDiffMock) GetRawConfig() cty.Value {
+	return d.RawConfig
 }

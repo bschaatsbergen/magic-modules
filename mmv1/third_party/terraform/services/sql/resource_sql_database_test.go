@@ -8,6 +8,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 	"github.com/hashicorp/terraform-provider-google/google/acctest"
 	"github.com/hashicorp/terraform-provider-google/google/envvar"
+	"github.com/hashicorp/terraform-provider-google/google/services/sql"
 
 	sqladmin "google.golang.org/api/sqladmin/v1beta4"
 )
@@ -148,7 +149,7 @@ func testAccCheckGoogleSqlDatabaseExists(t *testing.T, n string, database *sqlad
 
 		database_name := rs.Primary.Attributes["name"]
 		instance_name := rs.Primary.Attributes["instance"]
-		found, err := config.NewSqlAdminClient(config.UserAgent).Databases.Get(config.Project,
+		found, err := sql.NewClient(config, config.UserAgent).Databases.Get(config.Project,
 			instance_name, database_name).Do()
 
 		if err != nil {
@@ -171,7 +172,7 @@ func testAccSqlDatabaseDestroyProducer(t *testing.T) func(s *terraform.State) er
 
 			database_name := rs.Primary.Attributes["name"]
 			instance_name := rs.Primary.Attributes["instance"]
-			_, err := config.NewSqlAdminClient(config.UserAgent).Databases.Get(config.Project,
+			_, err := sql.NewClient(config, config.UserAgent).Databases.Get(config.Project,
 				instance_name, database_name).Do()
 
 			if err == nil {
@@ -181,6 +182,67 @@ func testAccSqlDatabaseDestroyProducer(t *testing.T) func(s *terraform.State) er
 
 		return nil
 	}
+}
+
+func TestAccSqlDatabase_instanceWithActivationPolicy(t *testing.T) {
+	t.Parallel()
+
+	var database sqladmin.Database
+
+	instance_name := fmt.Sprintf("tf-test-%d", acctest.RandInt(t))
+	database_name := fmt.Sprintf("tf-test-%d", acctest.RandInt(t))
+
+	acctest.VcrTest(t, resource.TestCase{
+		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
+		CheckDestroy:             testAccSqlDatabaseDestroyProducer(t),
+		Steps: []resource.TestStep{
+			{
+				Config: testGoogleSqlDatabase_instanceWithActivationPolicy(instance_name, database_name, "ALWAYS"),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckGoogleSqlDatabaseExists(
+						t, "google_sql_database.database", &database),
+				),
+			},
+			// Step 2: Update activation_policy to NEVER
+			{
+				Config: testGoogleSqlDatabase_instanceWithActivationPolicy(instance_name, database_name, "NEVER"),
+			},
+			// Step 3: Refresh to verify no errors
+			{
+				Config: testGoogleSqlDatabase_instanceWithActivationPolicy(instance_name, database_name, "NEVER"),
+			},
+			// Step 4: Update activation_policy to ALWAYS so that post-test destroy code is able to delete the google_sql_database resource
+			{
+				Config: testGoogleSqlDatabase_instanceWithActivationPolicy(instance_name, database_name, "ALWAYS"),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckGoogleSqlDatabaseExists(
+						t, "google_sql_database.database", &database),
+				),
+			},
+		},
+	})
+}
+
+func testGoogleSqlDatabase_instanceWithActivationPolicy(instance_name, database_name, activationPolicy string) string {
+	return fmt.Sprintf(`
+resource "google_sql_database_instance" "instance" {
+  name             = "%s"
+  database_version = "MYSQL_5_7"
+  region          = "us-central1"
+  deletion_protection = false
+  settings {
+    tier = "db-f1-micro"
+    availability_type = "ZONAL"
+    activation_policy = "%s"
+  }
+}
+
+resource "google_sql_database" "database" {
+	name     = "%s"
+	instance = google_sql_database_instance.instance.name
+  }
+`, instance_name, activationPolicy, database_name)
 }
 
 var testGoogleSqlDatabase_basic = `

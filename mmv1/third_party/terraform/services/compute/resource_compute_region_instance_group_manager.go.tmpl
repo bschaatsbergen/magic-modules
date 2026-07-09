@@ -1,0 +1,2435 @@
+package compute
+
+import (
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+
+	"github.com/hashicorp/terraform-provider-google/google/registry"
+	"github.com/hashicorp/terraform-provider-google/google/tpgresource"
+	transport_tpg "github.com/hashicorp/terraform-provider-google/google/transport"
+
+)
+
+func ResourceComputeRegionInstanceGroupManager() *schema.Resource {
+	return &schema.Resource{
+		Create: resourceComputeRegionInstanceGroupManagerCreate,
+		Read:   resourceComputeRegionInstanceGroupManagerRead,
+		Update: resourceComputeRegionInstanceGroupManagerUpdate,
+		Delete: resourceComputeRegionInstanceGroupManagerDelete,
+		Importer: &schema.ResourceImporter{
+			State: resourceRegionInstanceGroupManagerStateImporter,
+		},
+		Timeouts: &schema.ResourceTimeout{
+			Create: schema.DefaultTimeout(15 * time.Minute),
+			Update: schema.DefaultTimeout(15 * time.Minute),
+			Delete: schema.DefaultTimeout(15 * time.Minute),
+		},
+
+		CustomizeDiff: customdiff.All(
+            tpgresource.DefaultProviderDeletionPolicy("DELETE"),
+			tpgresource.DefaultProviderProject,
+			tpgresource.DefaultProviderRegion,
+			customdiff.ForceNewIfChange("resource_policies.0.workload_policy", ForceNewResourcePoliciesWorkloadPolicyIfNewIsEmpty),
+		),
+
+		Schema: map[string]*schema.Schema{
+			"base_instance_name": {
+				Type:        schema.TypeString,
+				Required:    true,
+				ForceNew:    true,
+				Description: `The base instance name to use for instances in this group. The value must be a valid RFC1035 name. Supported characters are lowercase letters, numbers, and hyphens (-). Instances are named by appending a hyphen and a random four-character string to the base instance name.`,
+			},
+
+			"version": {
+				Type:        schema.TypeList,
+				Required:    true,
+				Description: `Application versions managed by this instance group. Each version deals with a specific instance template, allowing canary release scenarios.`,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"name": {
+							Type:        schema.TypeString,
+							Optional:    true,
+							Description: `Version name.`,
+						},
+
+						"instance_template": {
+							Type:             schema.TypeString,
+							Required:         true,
+							DiffSuppressFunc: compareSelfLinkRelativePathsIgnoreParams,
+							Description:      `The full URL to an instance template from which all new instances of this version will be created.`,
+						},
+
+						"target_size": {
+							Type:        schema.TypeList,
+							Optional:    true,
+							MaxItems:    1,
+							Description: `The number of instances calculated as a fixed number or a percentage depending on the settings.`,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"fixed": {
+										Type:        schema.TypeInt,
+										Optional:    true,
+										Description: `The number of instances which are managed for this version. Conflicts with percent.`,
+									},
+
+									"percent": {
+										Type:         schema.TypeInt,
+										Optional:     true,
+										ValidateFunc: validation.IntBetween(0, 100),
+										Description:  `The number of instances (calculated as percentage) which are managed for this version. Conflicts with fixed. Note that when using percent, rounding will be in favor of explicitly set target_size values; a managed instance group with 2 instances and 2 versions, one of which has a target_size.percent of 60 will create 2 instances of that version.`,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+
+			"instance_flexibility_policy": {
+				Type:        schema.TypeList,
+				Optional:    true,
+				MaxItems:    1,
+				DiffSuppressFunc: emptyOrUnsetBlockDiffSuppress,
+				Description: `The flexibility policy for this managed instance group. Instance flexibility allowing MIG to create VMs from multiple types of machines. Instance flexibility configuration on MIG overrides instance template configuration.`,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"instance_selections": {
+							Type:        schema.TypeSet,
+							Optional:    true,
+							Description: `Named instance selections configuring properties that the group will use when creating new VMs.`,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"name": {
+										Type:        schema.TypeString,
+										Required:    true,
+										Description: `Instance selection name.`,
+									},
+
+									"rank": {
+										Type:        schema.TypeInt,
+										Optional:    true,
+										Description: `Preference of this instance selection. Lower number means higher preference. MIG will first try to create a VM based on the machine-type with lowest rank and fallback to next rank based on availability. Machine types and instance selections with the same rank have the same preference.`,
+									},
+
+									"machine_types": {
+										Type:     schema.TypeSet,
+										Required:    true,
+										Elem: &schema.Schema{
+											Type: schema.TypeString,
+										},
+										Description: `Full machine-type names, e.g. "n1-standard-16"`,
+									},
+
+									{{- if ne $.TargetVersionName `ga` }}
+									"min_cpu_platform": {
+										Type:        schema.TypeString,
+										Optional:    true,
+										Description: `Name of the minimum CPU platform to be used by this instance selection. e.g. 'Intel Ice Lake'`,
+									},
+
+									"disks": {
+										Type:        schema.TypeList,
+										Optional:    true,
+										Description: `List of disks to be attached to the instances created from this selection.`,
+										Elem: &schema.Resource {
+											Schema: map[string]*schema.Schema {
+												"auto_delete": {
+													Type:        schema.TypeBool,
+													Optional:    true,
+													Default:     true,
+													Description: `Whether or not the disk should be auto-deleted. This defaults to true.`,
+												},
+
+												"boot": {
+													Type:        schema.TypeBool,
+													Optional:    true,
+													Default:     false,
+													Description: `Indicates that this is a boot disk. This defaults to false.`,
+												},
+
+												"device_name": {
+													Type:        schema.TypeString,
+													Optional:    true,
+													Description: `A unique device name that is reflected into the /dev/ tree of a Linux operating system running within the instance. If not specified, the server chooses a default device name to apply to this disk.`,
+												},
+
+												"disk_name": {
+													Type:        schema.TypeString,
+													Optional:    true,
+													Description: `Name of the disk. When not provided, this defaults to the name of the instance.`,
+												},
+
+												"architecture": {
+													Type:        schema.TypeString,
+													Optional:    true,
+													ValidateFunc: validation.StringInSlice([]string{"ARM64", "X86_64"}, true),
+													Description: `The architecture of the image. Allowed values are ARM64 or X86_64.`,
+												},
+
+												"disk_size_gb": {
+													Type:        schema.TypeInt,
+													Optional:    true,
+													Description: `The size of the image in gigabytes. If not specified, it will inherit the size of its base image. For SCRATCH disks, the size must be one of 375 or 3000 GB, with a default of 375 GB.`,
+												},
+
+												"disk_type": {
+													Type:        schema.TypeString,
+													Optional:    true,
+													Description: `The Google Compute Engine disk type. Such as "pd-ssd", "local-ssd", "pd-balanced" or "pd-standard".`,
+												},
+
+												"labels": {
+													Type:        schema.TypeSet,
+													Optional:    true,
+													Description: `A set of key/value label pairs to assign to disks.`,
+													Elem: &schema.Resource {
+														Schema: map[string]*schema.Schema {
+															"key": {
+																Type:        schema.TypeString,
+																Required:    true,
+																Description: `The unique key of the label to assign to disks.`,
+															},
+															"value": {
+																Type:        schema.TypeString,
+																Required:    true,
+																Description: `The value of the label to assign to disks.`,
+															},
+														},
+													},
+												},
+
+												"provisioned_iops": {
+													Type:        schema.TypeInt,
+													Optional:    true,
+													Description: `Indicates how many IOPS to provision for the disk. This sets the number of I/O operations per second that the disk can handle. For more details, see the [Extreme persistent disk documentation](https://cloud.google.com/compute/docs/disks/extreme-persistent-disk) or the [Hyperdisk documentation](https://cloud.google.com/compute/docs/disks/hyperdisks) depending on the selected disk_type.`,
+												},
+
+												"provisioned_throughput": {
+													Type:        schema.TypeInt,
+													Optional:    true,
+													Description: `Indicates how much throughput to provision for the disk, in MB/s. This sets the amount of data that can be read or written from the disk per second. Values must greater than or equal to 1. For more details, see the [Hyperdisk documentation](https://cloud.google.com/compute/docs/disks/hyperdisks).`,
+												},
+
+												"resource_manager_tags": {
+													Type:        schema.TypeSet,
+													Optional:    true,
+													Description: `A map of resource manager tags. Resource manager tag keys and values have the same definition as resource manager tags. Keys must be in the format tagKeys/{tag_key_id}, and values are in the format tagValues/456. The field is ignored (both PUT & PATCH) when empty.`,
+													Elem: &schema.Resource {
+														Schema: map[string]*schema.Schema {
+															"key": {
+																Type:        schema.TypeString,
+																Required:    true,
+																Description: `The unique key of the resource manager tag to assign to disks. Keys must be in the format tagKeys/{tag_key_id}.`,
+															},
+															"value": {
+																Type:        schema.TypeString,
+																Required:    true,
+																Description: `The value of the resource manager tag to assign to disks. Values must be in the format tagValues/456.`,
+															},
+														},
+													},
+												},
+
+												"guest_os_features": {
+													Type:        schema.TypeList,
+													Optional:    true,
+													Description: `A list of features to enable on the guest operating system. Applicable only for bootable images.`,
+													Elem: &schema.Schema{
+														Type: schema.TypeString,
+													},
+												},
+
+												"source_image": {
+													Type:        schema.TypeString,
+													Optional:    true,
+													Description: `The image from which to initialize this disk. This can be one of: the image's self_link, projects/{project}/global/images/{image}, projects/{project}/global/images/family/{family}, global/images/{image}, global/images/family/{family}, family/{family}, {project}/{family}, {project}/{image}, {family}, or {image}. ~> Note: Either source or source_image is required when creating a new instance except for when creating a local SSD.`,
+												},
+
+												"source_image_encryption_key": {
+													Type:     schema.TypeList,
+													Optional: true,
+													Description: `The customer-supplied encryption key of the source image. Required if the source image is protected by a customer-supplied encryption key. Instance templates do not store customer-supplied encryption keys, so you cannot create disks for instances in a managed instance group if the source images are encrypted with your own keys.`,
+													MaxItems: 1,
+													Elem: &schema.Resource{
+														Schema: map[string]*schema.Schema{
+															"raw_key": {
+																Type:     schema.TypeString,
+																Optional: true,
+																Description: `Specifies a 256-bit customer-supplied encryption key, encoded in RFC 4648 base64 to either encrypt or decrypt this resource. Only one of kms_key_self_link, rsa_encrypted_key and raw_key may be set.`,
+																Sensitive: true,
+															},
+															"rsa_encrypted_key": {
+																Type:     schema.TypeString,
+																Optional: true,
+																Description: `Specifies an RFC 4648 base64 encoded, RSA-wrapped 2048-bit customer-supplied encryption key to either encrypt or decrypt this resource. Only one of kms_key_self_link, rsa_encrypted_key and raw_key may be set.`,
+																Sensitive: true,
+															},
+															"kms_key_service_account": {
+																Type:     schema.TypeString,
+																Optional: true,
+																Description: `The service account being used for the encryption request for the given KMS key. If absent, the Compute Engine default service account is used.`,
+															},
+															"kms_key_self_link": {
+																Type:     schema.TypeString,
+																Optional: true,
+																Description: `The self link of the encryption key that is stored in Google Cloud KMS. Only one of kms_key_self_link, rsa_encrypted_key and raw_key may be set.`,
+															},
+														},
+													},
+												},
+
+												"source_snapshot": {
+													Type:     schema.TypeString,
+													Optional: true,
+													Description: `The source snapshot to create this disk. When creating a new instance, one of initializeParams.sourceSnapshot, initializeParams.sourceImage, or disks.source is required except for local SSD.`,
+												},
+
+												"source_snapshot_encryption_key": {
+													Type:        schema.TypeList,
+													Optional:    true,
+													Description: `The customer-supplied encryption key of the source snapshot.`,
+													MaxItems:    1,
+													Elem: &schema.Resource{
+														Schema: map[string]*schema.Schema{
+															"raw_key": {
+																Type:     schema.TypeString,
+																Optional: true,
+																Description: `Specifies a 256-bit customer-supplied encryption key, encoded in RFC 4648 base64 to either encrypt or decrypt this resource. Only one of kms_key_self_link, rsa_encrypted_key and raw_key may be set.`,
+																Sensitive: true,
+															},
+															"rsa_encrypted_key": {
+																Type:     schema.TypeString,
+																Optional: true,
+																Description: `Specifies an RFC 4648 base64 encoded, RSA-wrapped 2048-bit customer-supplied encryption key to either encrypt or decrypt this resource. Only one of kms_key_self_link, rsa_encrypted_key and raw_key may be set.`,
+																Sensitive: true,
+															},
+															"kms_key_service_account": {
+																Type:     schema.TypeString,
+																Optional: true,
+																Description: `The service account being used for the encryption request for the given KMS key. If absent, the Compute Engine default service account is used.`,
+															},
+															"kms_key_self_link": {
+																Type:     schema.TypeString,
+																Optional: true,
+																Description: `The self link of the encryption key that is stored in Google Cloud KMS. Only one of kms_key_self_link, rsa_encrypted_key and raw_key may be set.`,
+															},
+														},
+													},
+												},
+
+												"interface": {
+													Type:        schema.TypeString,
+													Optional:    true,
+													Description: `Specifies the disk interface to use for attaching this disk.`,
+												},
+
+												"mode": {
+													Type:        schema.TypeString,
+													Optional:    true,
+													ValidateFunc: validation.StringInSlice([]string{"READ_WRITE", "READ_ONLY"}, true),
+													Description: `The mode in which to attach this disk, either READ_WRITE or READ_ONLY. If you are attaching or creating a boot disk, this must read-write mode.`,
+												},
+
+												"source": {
+													Type:        schema.TypeString,
+													Optional:    true,
+													Description: `The name (not self_link) of the disk (such as those managed by google_compute_disk) to attach. ~> Note: Either source or source_image is required when creating a new instance except for when creating a local SSD.`,
+												},
+
+												"type": {
+													Type:        schema.TypeString,
+													Optional:    true,
+													ValidateFunc: validation.StringInSlice([]string{"SCRATCH", "PERSISTENT"}, true),
+													Description: `The type of Google Compute Engine disk, can be either "SCRATCH" or "PERSISTENT".`,
+												},
+
+												"disk_encryption_key": {
+													Type:        schema.TypeList,
+													Optional:    true,
+													MaxItems:    1,
+													Description: `Encrypts or decrypts a disk using a customer-supplied encryption key.`,
+													Elem: &schema.Resource{
+														Schema: map[string]*schema.Schema {
+															"raw_key": {
+																Type:     schema.TypeString,
+																Optional: true,
+																Description: `Specifies a 256-bit customer-supplied encryption key, encoded in RFC 4648 base64 to either encrypt or decrypt this resource. Only one of kms_key_self_link, rsa_encrypted_key and raw_key may be set.`,
+																Sensitive: true,
+															},
+															"rsa_encrypted_key": {
+																Type:     schema.TypeString,
+																Optional: true,
+																Description: `Specifies an RFC 4648 base64 encoded, RSA-wrapped 2048-bit customer-supplied encryption key to either encrypt or decrypt this resource. Only one of kms_key_self_link, rsa_encrypted_key and raw_key may be set.`,
+																Sensitive: true,
+															},
+															"kms_key_service_account": {
+																Type:             schema.TypeString,
+																Optional:         true,
+																Description:      `The service account being used for the encryption request for the given KMS key. If absent, the Compute Engine default service account is used.`,
+															},
+															"kms_key_self_link": {
+																Type:             schema.TypeString,
+																Optional: 		  true,
+																DiffSuppressFunc: tpgresource.CompareSelfLinkRelativePaths,
+																Description:      `The self link of the encryption key that is stored in Google Cloud KMS.`,
+															},
+														},
+													},
+												},
+
+												"resource_policies": {
+													Type:        schema.TypeList,
+													Optional:    true,
+													MaxItems:    1,
+													Description: `A list (short name or id) of resource policies to attach to this disk. Currently a max of 1 resource policy is supported.`,
+													Elem: &schema.Schema {
+														Type:             schema.TypeString,
+														DiffSuppressFunc: tpgresource.CompareResourceNames,
+													},
+												},
+											},
+										},
+									},
+									{{- end }}
+								},
+							},
+						},
+					},
+				},
+			},
+
+			"name": {
+				Type:        schema.TypeString,
+				Required:    true,
+				ForceNew:    true,
+				Description: `The name of the instance group manager. Must be 1-63 characters long and comply with RFC1035. Supported characters include lowercase letters, numbers, and hyphens.`,
+			},
+
+			"region": {
+				Type:        schema.TypeString,
+				Computed:    true,
+				Optional:    true,
+				ForceNew:    true,
+				Description: `The region where the managed instance group resides.`,
+			},
+
+			"creation_timestamp": {
+				Type:        schema.TypeString,
+				Computed:    true,
+				Description: `Creation timestamp in RFC3339 text format.`,
+			},
+
+			"description": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				ForceNew:    true,
+				Description: `An optional textual description of the instance group manager.`,
+			},
+
+			"instance_group_manager_id": {
+				Type:        schema.TypeInt,
+				Computed:    true,
+				Description: `The unique identifier number for the resource. This identifier is defined by the server.`,
+			},
+
+			"fingerprint": {
+				Type:        schema.TypeString,
+				Computed:    true,
+				Description: `The fingerprint of the instance group manager.`,
+			},
+
+			"instance_group": {
+				Type:        schema.TypeString,
+				Computed:    true,
+				Description: `The full URL of the instance group created by the manager.`,
+			},
+
+			"named_port": {
+				Type:        schema.TypeSet,
+				Optional:    true,
+				Description: `The named port configuration.`,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"name": {
+							Type:        schema.TypeString,
+							Required:    true,
+							Description: `The name of the port.`,
+						},
+
+						"port": {
+							Type:        schema.TypeInt,
+							Required:    true,
+							Description: `The port number.`,
+						},
+					},
+				},
+			},
+
+			"project": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				ForceNew:    true,
+				Computed:    true,
+				Description: `The ID of the project in which the resource belongs. If it is not provided, the provider project is used.`,
+			},
+
+			"self_link": {
+				Type:        schema.TypeString,
+				Computed:    true,
+				Description: `The URL of the created resource.`,
+			},
+
+			"target_pools": {
+				Type:     schema.TypeSet,
+				Optional: true,
+				Elem: &schema.Schema{
+					Type: schema.TypeString,
+				},
+				Set:         tpgresource.SelfLinkRelativePathHash,
+				Description: `The full URL of all target pools to which new instances in the group are added. Updating the target pools attribute does not affect existing instances.`,
+			},
+			"target_size": {
+				Type:        schema.TypeInt,
+				Computed:    true,
+				Optional:    true,
+				Description: `The target number of running instances for this managed instance group. This value should always be explicitly set unless this resource is attached to an autoscaler, in which case it should never be set. Defaults to 0.`,
+			},
+
+			"list_managed_instances_results": {
+				Type:         schema.TypeString,
+				Optional:     true,
+				Default:      "PAGELESS",
+				ValidateFunc: validation.StringInSlice([]string{"PAGELESS", "PAGINATED"}, false),
+				Description:  `Pagination behavior of the listManagedInstances API method for this managed instance group. Valid values are: "PAGELESS", "PAGINATED". If PAGELESS (default), Pagination is disabled for the group's listManagedInstances API method. maxResults and pageToken query parameters are ignored and all instances are returned in a single response. If PAGINATED, pagination is enabled, maxResults and pageToken query parameters are respected.`,
+			},
+
+			// If true, the resource will report ready only after no instances are being created.
+			// This will not block future reads if instances are being recreated, and it respects
+			// the "createNoRetry" parameter that's available for this resource.
+			"wait_for_instances": {
+				Type:        schema.TypeBool,
+				Optional:    true,
+				Default:     false,
+				Description: `Whether to wait for all instances to be created/updated before returning. Note that if this is set to true and the operation does not succeed, Terraform will continue trying until it times out.`,
+			},
+			"wait_for_instances_status": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				Default:     "STABLE",
+				ValidateFunc: validation.StringInSlice([]string{"STABLE", "UPDATED"}, false),
+				Description: `When used with wait_for_instances specifies the status to wait for. When STABLE is specified this resource will wait until the instances are stable before returning. When UPDATED is set, it will wait for the version target to be reached and any per instance configs to be effective and all instances configs to be effective as well as all instances to be stable before returning.`,
+			},
+
+			"auto_healing_policies": {
+				Type:        schema.TypeList,
+				Optional:    true,
+				MaxItems:    1,
+				Description: `The autohealing policies for this managed instance group. You can specify only one value.`,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"health_check": {
+							Type:             schema.TypeString,
+							Required:         true,
+							DiffSuppressFunc: tpgresource.CompareSelfLinkRelativePaths,
+							Description:      `The health check resource that signals autohealing.`,
+						},
+
+						"initial_delay_sec": {
+							Type:         schema.TypeInt,
+							Required:     true,
+							ValidateFunc: validation.IntBetween(0, 3600),
+							Description:  `The number of seconds that the managed instance group waits before it applies autohealing policies to new instances or recently recreated instances. Between 0 and 3600.`,
+						},
+					},
+				},
+			},
+
+			"distribution_policy_zones": {
+				Type:        schema.TypeSet,
+				Optional:    true,
+				ForceNew:    true,
+				Computed:    true,
+				Description: `The distribution policy for this managed instance group. You can specify one or more values.`,
+				Set:         hashZoneFromSelfLinkOrResourceName,
+				Elem: &schema.Schema{
+					Type:             schema.TypeString,
+					DiffSuppressFunc: tpgresource.CompareSelfLinkOrResourceName,
+				},
+			},
+
+			"distribution_policy_target_shape": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				Computed:    true,
+				Description: `The shape to which the group converges either proactively or on resize events (depending on the value set in updatePolicy.instanceRedistributionType).`,
+			},
+
+			"instance_lifecycle_policy": {
+				Computed:    true,
+				Type:        schema.TypeList,
+				Optional:    true,
+				MaxItems:    1,
+				Description: `The instance lifecycle policy for this managed instance group.`,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"default_action_on_failure": {
+							Type:         schema.TypeString,
+							Default:      "REPAIR",
+							Optional:     true,
+							ValidateFunc: validation.StringInSlice([]string{"REPAIR", "DO_NOTHING"}, true),
+							Description:  `Specifies the action that a MIG performs on a failed VM. If the value of the "on_failed_health_check" field is DEFAULT_ACTION, then the same action also applies to the VMs on which your application fails a health check. Valid values are: REPAIR, DO_NOTHING. If REPAIR (default), then MIG automatically repairs a failed VM by recreating it. For more information, see about repairing VMs in a MIG. If DO_NOTHING, then MIG does not repair a failed VM.`,
+						},
+						"on_failed_health_check": {
+							Type:		   schema.TypeString,
+							Default:       "DEFAULT_ACTION",
+							Optional:      true,
+							ValidateFunc:  validation.StringInSlice([]string{"DEFAULT_ACTION", "REPAIR", "DO_NOTHING"}, true),
+							Description:  `Specifies the action that a MIG performs on an unhealthy VM. A VM is marked as unhealthy when the application running on that VM fails a health check. Valid values are: DEFAULT_ACTION, DO_NOTHING, REPAIR. If DEFAULT_ACTION (default), then MIG uses the same action configured for the  "default_action_on_failure" field. If DO_NOTHING, then MIG does not repair unhealthy VM. If REPAIR, then MIG automatically repairs an unhealthy VM by recreating it.`,
+						},
+						"force_update_on_repair": {
+							Type:         schema.TypeString,
+							Default:      "NO",
+							Optional:     true,
+							ValidateFunc: validation.StringInSlice([]string{"YES", "NO"}, false),
+							Description:  `Specifies whether to apply the group's latest configuration when repairing a VM. Valid options are: YES, NO. If YES and you updated the group's instance template or per-instance configurations after the VM was created, then these changes are applied when VM is repaired. If NO (default), then updates are applied in accordance with the group's update policy type.`,
+						},
+
+						"on_repair": {
+							Type:        schema.TypeList,
+							Computed:    true,
+							Optional:    true,
+							MaxItems:    1,
+							Description: `Configuration for VM repairs in the MIG.`,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"allow_changing_zone": {
+										Type:         schema.TypeString,
+										Optional:     true,
+										Default:     "NO",
+										ValidateFunc: validation.StringInSlice([]string{"YES", "NO"}, true),
+										Description:  `Specifies whether the MIG can change a VM's zone during a repair. If "YES", MIG can select a different zone for the VM during a repair. Else if "NO", MIG cannot change a VM's zone during a repair. The default value of allow_changing_zone is "NO".`,
+									},
+								},
+							},
+						},
+
+					},
+				},
+			},
+
+			"standby_policy": {
+				Type:        schema.TypeList,
+				Computed:    true,
+				Optional:    true,
+				MaxItems:    1,
+				Description: `Standby policy for stopped and suspended instances.`,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"initial_delay_sec": {
+							Computed:     true,
+							Type:             schema.TypeInt,
+							Optional:         true,
+							ValidateFunc:     validation.IntBetween(0, 3600),
+							Description:      `Specifies the number of seconds that the MIG should wait to suspend or stop a VM after that VM was created. The initial delay gives the initialization script the time to prepare your VM for a quick scale out. The value of initial delay must be between 0 and 3600 seconds. The default value is 0.`,
+						},
+
+						"mode": {
+							Computed:     true,
+							Type:         schema.TypeString,
+							Optional:     true,
+							ValidateFunc: validation.StringInSlice([]string{"MANUAL", "SCALE_OUT_POOL"}, true),
+							Description:  `Defines how a MIG resumes or starts VMs from a standby pool when the group scales out. The default mode is "MANUAL".`,
+						},
+					},
+				},
+			},
+
+			"target_suspended_size": {
+				Type:        schema.TypeInt,
+				Computed:    true,
+				Optional:    true,
+				Description: `The target number of suspended instances for this managed instance group.`,
+			},
+
+			"target_stopped_size": {
+				Type:        schema.TypeInt,
+				Computed:    true,
+				Optional:    true,
+				Description: `The target number of stopped instances for this managed instance group.`,
+			},
+
+			"update_policy": {
+				Type:        schema.TypeList,
+				Computed:    true,
+				Optional:    true,
+				MaxItems:    1,
+				Description: `The update policy for this managed instance group.`,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"minimal_action": {
+							Type:         schema.TypeString,
+							Required:     true,
+							ValidateFunc: validation.StringInSlice([]string{"NONE", "REFRESH", "RESTART", "REPLACE"}, false),
+							Description:  `Minimal action to be taken on an instance. You can specify either NONE to forbid any actions, REFRESH to update without stopping instances, RESTART to restart existing instances or REPLACE to delete and create new instances from the target template. If you specify a REFRESH, the Updater will attempt to perform that action only. However, if the Updater determines that the minimal action you specify is not enough to perform the update, it might perform a more disruptive action.`,
+						},
+
+						"most_disruptive_allowed_action": {
+							Type:         schema.TypeString,
+							Optional:     true,
+							ValidateFunc: validation.StringInSlice([]string{"NONE", "REFRESH", "RESTART", "REPLACE"}, false),
+							Description:  `Most disruptive action that is allowed to be taken on an instance. You can specify either NONE to forbid any actions, REFRESH to allow actions that do not need instance restart, RESTART to allow actions that can be applied without instance replacing or REPLACE to allow all possible actions. If the Updater determines that the minimal update action needed is more disruptive than most disruptive allowed action you specify it will not perform the update at all.`,
+						},
+
+						"type": {
+							Type:         schema.TypeString,
+							Required:     true,
+							ValidateFunc: validation.StringInSlice([]string{"OPPORTUNISTIC", "PROACTIVE"}, false),
+							Description:  `The type of update process. You can specify either PROACTIVE so that the instance group manager proactively executes actions in order to bring instances to their target versions or OPPORTUNISTIC so that no action is proactively executed but the update will be performed as part of other actions (for example, resizes or recreateInstances calls).`,
+						},
+
+						"max_surge_fixed": {
+							Type:          schema.TypeInt,
+							Optional:      true,
+							Computed:      true,
+							ConflictsWith: []string{"update_policy.0.max_surge_percent"},
+							Description:   `Specifies a fixed number of VM instances. This must be a positive integer. Conflicts with max_surge_percent. Both cannot be 0`,
+						},
+
+						"max_surge_percent": {
+							Type:          schema.TypeInt,
+							Optional:      true,
+							ConflictsWith: []string{"update_policy.0.max_surge_fixed"},
+							Description:   `Specifies a percentage of instances between 0 to 100%, inclusive. For example, specify 80 for 80%. Conflicts with max_surge_fixed.`,
+							ValidateFunc:  validation.IntBetween(0, 100),
+						},
+
+						"max_unavailable_fixed": {
+							Type:          schema.TypeInt,
+							Optional:      true,
+							Computed:      true,
+							Description:   `Specifies a fixed number of VM instances. This must be a positive integer.`,
+							ConflictsWith: []string{"update_policy.0.max_unavailable_percent"},
+						},
+
+						"max_unavailable_percent": {
+							Type:          schema.TypeInt,
+							Optional:      true,
+							ConflictsWith: []string{"update_policy.0.max_unavailable_fixed"},
+							ValidateFunc:  validation.IntBetween(0, 100),
+							Description:   `Specifies a percentage of instances between 0 to 100%, inclusive. For example, specify 80 for 80%.`,
+						},
+
+						{{- if ne $.TargetVersionName "ga" }}
+						"min_ready_sec": {
+							Type:         schema.TypeInt,
+							Optional:     true,
+							ValidateFunc: validation.IntBetween(0, 3600),
+							Description:  `Minimum number of seconds to wait for after a newly created instance becomes available. This value must be from range [0, 3600].`,
+						},
+						{{- end }}
+						"instance_redistribution_type": {
+							Type:             schema.TypeString,
+							Optional:         true,
+							ValidateFunc:     validation.StringInSlice([]string{"PROACTIVE", "NONE", ""}, false),
+							DiffSuppressFunc: tpgresource.EmptyOrDefaultStringSuppress("PROACTIVE"),
+							Description:      `The instance redistribution policy for regional managed instance groups. Valid values are: "PROACTIVE", "NONE". If PROACTIVE (default), the group attempts to maintain an even distribution of VM instances across zones in the region. If NONE, proactive redistribution is disabled.`,
+						},
+						"replacement_method": {
+							Type:             schema.TypeString,
+							Optional:         true,
+							ValidateFunc:     validation.StringInSlice([]string{"RECREATE", "SUBSTITUTE", ""}, false),
+							DiffSuppressFunc: tpgresource.EmptyOrDefaultStringSuppress("SUBSTITUTE"),
+							Description:      `The instance replacement method for regional managed instance groups. Valid values are: "RECREATE", "SUBSTITUTE". If SUBSTITUTE (default), the group replaces VM instances with new instances that have randomly generated names. If RECREATE, instance names are preserved.  You must also set max_unavailable_fixed or max_unavailable_percent to be greater than 0.`,
+						},
+					},
+				},
+			},
+			"all_instances_config": {
+				Type:        schema.TypeList,
+				Optional:    true,
+				MaxItems:    1,
+				Description: `Specifies configuration that overrides the instance template configuration for the group.`,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"metadata": {
+							Type:        schema.TypeMap,
+							Optional:    true,
+							Elem:        &schema.Schema{Type: schema.TypeString},
+							Set:         schema.HashString,
+							Description: `The metadata key-value pairs that you want to patch onto the instance. For more information, see Project and instance metadata,`,
+						},
+						"labels": {
+							Type:        schema.TypeMap,
+							Optional:    true,
+							Elem:        &schema.Schema{Type: schema.TypeString},
+							Set:         schema.HashString,
+							Description: `The label key-value pairs that you want to patch onto the instance,`,
+						},
+					},
+				},
+			},
+			"stateful_internal_ip": {
+				Type:        schema.TypeList,
+				Optional:    true,
+				Description: `External IPs considered stateful by the instance group. `,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"interface_name": {
+							Type:        schema.TypeString,
+							Optional:    true,
+							Description: `The network interface name`,
+						},
+						"delete_rule": {
+							Type:         schema.TypeString,
+							Default:      "NEVER",
+							Optional:     true,
+							ValidateFunc: validation.StringInSlice([]string{"NEVER", "ON_PERMANENT_INSTANCE_DELETION"}, true),
+							Description:  `A value that prescribes what should happen to an associated static Address resource when a VM instance is permanently deleted. The available options are NEVER and ON_PERMANENT_INSTANCE_DELETION. NEVER - detach the IP when the VM is deleted, but do not delete the address resource. ON_PERMANENT_INSTANCE_DELETION will delete the stateful address when the VM is permanently deleted from the instance group. The default is NEVER.`,
+						},
+					},
+				},
+			},
+			"stateful_external_ip": {
+				Type:        schema.TypeList,
+				Optional:    true,
+				Description: `External IPs considered stateful by the instance group. `,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"interface_name": {
+							Type:        schema.TypeString,
+							Optional:    true,
+							Description: `The network interface name`,
+						},
+						"delete_rule": {
+							Type:         schema.TypeString,
+							Default:      "NEVER",
+							Optional:     true,
+							ValidateFunc: validation.StringInSlice([]string{"NEVER", "ON_PERMANENT_INSTANCE_DELETION"}, true),
+							Description:  `A value that prescribes what should happen to an associated static Address resource when a VM instance is permanently deleted. The available options are NEVER and ON_PERMANENT_INSTANCE_DELETION. NEVER - detach the IP when the VM is deleted, but do not delete the address resource. ON_PERMANENT_INSTANCE_DELETION will delete the stateful address when the VM is permanently deleted from the instance group. The default is NEVER.`,
+						},
+					},
+				},
+			},
+			"stateful_disk": {
+				Type:        schema.TypeSet,
+				Optional:    true,
+				Description: `Disks created on the instances that will be preserved on instance delete, update, etc. Structure is documented below. For more information see the official documentation. Proactive cross zone instance redistribution must be disabled before you can update stateful disks on existing instance group managers. This can be controlled via the update_policy.`,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"device_name": {
+							Type:        schema.TypeString,
+							Required:    true,
+							Description: `The device name of the disk to be attached.`,
+						},
+
+						"delete_rule": {
+							Type:         schema.TypeString,
+							Default:      "NEVER",
+							Optional:     true,
+							Description:  `A value that prescribes what should happen to the stateful disk when the VM instance is deleted. The available options are NEVER and ON_PERMANENT_INSTANCE_DELETION. NEVER - detach the disk when the VM is deleted, but do not delete the disk. ON_PERMANENT_INSTANCE_DELETION will delete the stateful disk when the VM is permanently deleted from the instance group. The default is NEVER.`,
+							ValidateFunc: validation.StringInSlice([]string{"NEVER", "ON_PERMANENT_INSTANCE_DELETION"}, true),
+						},
+					},
+				},
+			},
+			"status": {
+				Type:        schema.TypeList,
+				Computed:    true,
+				Description: `The status of this managed instance group.`,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"is_stable": {
+							Type:        schema.TypeBool,
+							Computed:    true,
+							Description: `A bit indicating whether the managed instance group is in a stable state. A stable state means that: none of the instances in the managed instance group is currently undergoing any type of change (for example, creation, restart, or deletion); no future changes are scheduled for instances in the managed instance group; and the managed instance group itself is not being modified.`,
+						},
+
+						"version_target": {
+							Type:        schema.TypeList,
+							Computed:    true,
+							Description: `A status of consistency of Instances' versions with their target version specified by version field on Instance Group Manager.`,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"is_reached": {
+										Type:        schema.TypeBool,
+										Computed:    true,
+										Description: `A bit indicating whether version target has been reached in this managed instance group, i.e. all instances are in their target version. Instances' target version are specified by version field on Instance Group Manager.`,
+									},
+								},
+							},
+						},
+						"all_instances_config": {
+							Type:        schema.TypeList,
+							Computed:    true,
+							Description: `Status of all-instances configuration on the group.`,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"effective": {
+										Type:        schema.TypeBool,
+										Computed:    true,
+										Description: `A bit indicating whether this configuration has been applied to all managed instances in the group.`,
+									},
+									"current_revision": {
+										Type:        schema.TypeString,
+										Computed:    true,
+										Description: `Current all-instances configuration revision. This value is in RFC3339 text format.`,
+									},
+								},
+							},
+						},
+						"stateful": {
+							Type:        schema.TypeList,
+							Computed:    true,
+							Description: `Stateful status of the given Instance Group Manager.`,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"has_stateful_config": {
+										Type:        schema.TypeBool,
+										Computed:    true,
+										Description: `A bit indicating whether the managed instance group has stateful configuration, that is, if you have configured any items in a stateful policy or in per-instance configs. The group might report that it has no stateful config even when there is still some preserved state on a managed instance, for example, if you have deleted all PICs but not yet applied those deletions.`,
+									},
+									"per_instance_configs": {
+										Type:        schema.TypeList,
+										Computed:    true,
+										Description: `Status of per-instance configs on the instances.`,
+										Elem: &schema.Resource{
+											Schema: map[string]*schema.Schema{
+												"all_effective": {
+													Type:        schema.TypeBool,
+													Computed:    true,
+													Description: `A bit indicating if all of the group's per-instance configs (listed in the output of a listPerInstanceConfigs API call) have status EFFECTIVE or there are no per-instance-configs.`,
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			"resource_policies": {
+        Type:        schema.TypeList,
+        Optional:    true,
+        Description: `Resource policies for this managed instance group.`,
+        MaxItems:    1,
+        Elem: &schema.Resource{
+          Schema: map[string]*schema.Schema{
+            "workload_policy": {
+              Type:        schema.TypeString,
+              Optional:    true,
+              DiffSuppressFunc: tpgresource.CompareSelfLinkRelativePaths,
+              Description: `The URL of the workload policy that is specified for this managed instance group. It can be a full or partial URL.`,
+            },
+          },
+        },
+      },
+			"target_size_policy": {
+				Type:        schema.TypeList,
+				Optional:    true,
+				Computed:    true,
+				Description: `The policy that specifies how the MIG creates its VMs to achieve the target size.`,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"mode": {
+							Type:         schema.TypeString,
+							Required:     true,
+							ForceNew:     true,
+							Description:  `The mode of target size policy based on which the MIG creates its VMs individually or all at once.`,
+							ValidateFunc: validation.StringInSlice([]string{"BULK", "INDIVIDUAL"}, false),
+						},
+					},
+				},
+			},
+			{{- if ne $.TargetVersionName "ga" }}
+			"params": {
+				Type:        schema.TypeList,
+				MaxItems:    1,
+				Optional:    true,
+				ForceNew:    true,
+				Description: `Input only additional params for instance group manager creation.`,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"resource_manager_tags": {
+							Type:         schema.TypeMap,
+							Optional:     true,
+							// This field is intentionally not updatable. The API overrides all existing tags on the field when updated.
+							ForceNew:     true,
+							Description: `Resource manager tags to bind to the managed instance group. The tags are key-value pairs. Keys must be in the format tagKeys/123 and values in the format tagValues/456.`,
+						},
+					},
+				},
+			},
+			{{- end }}
+			//UDP schema start
+            "deletion_policy": tpgresource.DeletionPolicySchemaEntry("DELETE"),
+//UDP schema end
+		},
+		UseJSONNumber: true,
+	}
+}
+
+func resourceComputeRegionInstanceGroupManagerCreate(d *schema.ResourceData, meta interface{}) error {
+	config := meta.(*transport_tpg.Config)
+	userAgent, err :=  tpgresource.GenerateUserAgentString(d, config.UserAgent)
+	if err != nil {
+		return err
+	}
+
+	project, err := tpgresource.GetProject(d, config)
+	if err != nil {
+		return err
+	}
+
+	flexibilityPolicy, err := expandInstanceFlexibilityPolicy(d)
+	if err != nil {
+		return err
+	}
+
+	body := map[string]interface{}{
+		"name":                        d.Get("name").(string),
+		"baseInstanceName":            d.Get("base_instance_name").(string),
+		"targetSize":                  int64(d.Get("target_size").(int)),
+		"listManagedInstancesResults": d.Get("list_managed_instances_results").(string),
+		"versions":                    expandVersions(d.Get("version").([]interface{})),
+		"updatePolicy":                expandRegionUpdatePolicy(d.Get("update_policy").([]interface{})),
+		"instanceLifecyclePolicy":     expandInstanceLifecyclePolicy(d.Get("instance_lifecycle_policy").([]interface{})),
+		"statefulPolicy":              expandStatefulPolicy(d),
+		"resourcePolicies":            expandResourcePolicies(d.Get("resource_policies").([]interface{})),
+	}
+	if standbyPolicy := expandStandbyPolicy(d); standbyPolicy != nil {
+		body["standbyPolicy"] = standbyPolicy
+	}
+	if flexibilityPolicy != nil {
+		body["instanceFlexibilityPolicy"] = flexibilityPolicy
+	}
+	if desc := d.Get("description").(string); desc != "" {
+		body["description"] = desc
+	}
+	if namedPorts := getNamedPortsBeta(d.Get("named_port").(*schema.Set).List()); len(namedPorts) > 0 {
+		body["namedPorts"] = namedPorts
+	}
+	if targetPools := tpgresource.ConvertStringSet(d.Get("target_pools").(*schema.Set)); len(targetPools) > 0 {
+		body["targetPools"] = targetPools
+	}
+	if autoHealingPolicies := expandAutoHealingPolicies(d.Get("auto_healing_policies").([]interface{})); len(autoHealingPolicies) > 0 {
+		body["autoHealingPolicies"] = autoHealingPolicies
+	}
+	if targetSuspendedSize := d.Get("target_suspended_size").(int); targetSuspendedSize > 0 {
+		body["targetSuspendedSize"] = int64(targetSuspendedSize)
+	}
+	if targetStoppedSize := d.Get("target_stopped_size").(int); targetStoppedSize > 0 {
+		body["targetStoppedSize"] = int64(targetStoppedSize)
+	}
+	if allInstancesConfig := expandAllInstancesConfig(nil, d.Get("all_instances_config").([]interface{})); allInstancesConfig != nil {
+		body["allInstancesConfig"] = allInstancesConfig
+	}
+	if distributionPolicy := expandDistributionPolicyForCreate(d); distributionPolicy != nil {
+		body["distributionPolicy"] = distributionPolicy
+	}
+	if targetSizePolicy := expandTargetSizePolicy(d.Get("target_size_policy").([]interface{})); targetSizePolicy != nil {
+		body["targetSizePolicy"] = targetSizePolicy
+	}
+	{{- if ne $.TargetVersionName "ga" }}
+	if params := expandInstanceGroupManagerParams(d); params != nil {
+		body["params"] = params
+	}
+	{{- end }}
+
+	url, err := tpgresource.ReplaceVars(d, config, "{{"{{"}}ComputeBasePath{{"}}"}}projects/{{"{{"}}project{{"}}"}}/regions/{{"{{"}}region{{"}}"}}/instanceGroupManagers")
+	if err != nil {
+		return err
+	}
+
+	res, err := transport_tpg.SendRequest(transport_tpg.SendRequestOptions{
+		Config:    config,
+		Method:    "POST",
+		Project:   project,
+		RawURL:    url,
+		UserAgent: userAgent,
+		Body:      body,
+	})
+	if err != nil {
+		return fmt.Errorf("Error creating RegionInstanceGroupManager: %s", err)
+	}
+
+	id, err := tpgresource.ReplaceVars(d, config, "projects/{{"{{"}}project{{"}}"}}/regions/{{"{{"}}region{{"}}"}}/instanceGroupManagers/{{"{{"}}name{{"}}"}}")
+	if err != nil {
+		return fmt.Errorf("Error constructing id: %s", err)
+	}
+	d.SetId(id)
+
+	// Wait for the operation to complete
+	err = ComputeOperationWaitTime(config, res, project, "Creating InstanceGroupManager", userAgent, d.Timeout(schema.TimeoutCreate))
+	if err != nil {
+		return err
+	}
+
+	if d.Get("wait_for_instances").(bool) {
+		err := computeRIGMWaitForInstanceStatus(d, meta)
+		if err != nil {
+			return err
+		}
+	}
+
+	return resourceComputeRegionInstanceGroupManagerRead(d, config)
+}
+
+func computeRIGMWaitForInstanceStatus(d *schema.ResourceData, meta interface{}) error {
+	waitForUpdates := d.Get("wait_for_instances_status").(string) == "UPDATED"
+	conf := retry.StateChangeConf{
+		Pending: []string{"creating", "error", "updating per instance configs", "reaching version target", "updating all instances config"},
+		Target:  []string{"created"},
+		Refresh: waitForRegionInstancesRefreshFunc(getRegionalManager, waitForUpdates, d, meta),
+		Timeout: d.Timeout(schema.TimeoutCreate),
+	}
+	_, err := conf.WaitForState()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+type getRegionInstanceManagerFunc func(*schema.ResourceData, interface{}) (map[string]interface{}, error)
+
+func getRegionalManager(d *schema.ResourceData, meta interface{}) (map[string]interface{}, error) {
+	config := meta.(*transport_tpg.Config)
+
+	project, err := tpgresource.GetProject(d, config)
+	if err != nil {
+		return nil, err
+	}
+
+	userAgent, err :=  tpgresource.GenerateUserAgentString(d, config.UserAgent)
+	if err != nil {
+		return nil, err
+	}
+
+	name := d.Get("name").(string)
+
+	url, err := tpgresource.ReplaceVars(d, config, "{{"{{"}}ComputeBasePath{{"}}"}}projects/{{"{{"}}project{{"}}"}}/regions/{{"{{"}}region{{"}}"}}/instanceGroupManagers/{{"{{"}}name{{"}}"}}")
+	if err != nil {
+		return nil, err
+	}
+
+	res, err := transport_tpg.SendRequest(transport_tpg.SendRequestOptions{
+		Config:    config,
+		Method:    "GET",
+		Project:   project,
+		RawURL:    url,
+		UserAgent: userAgent,
+	})
+	if err != nil {
+		return nil, transport_tpg.HandleNotFoundError(err, d, fmt.Sprintf("Region Instance Manager %q", name))
+	}
+
+	return res, nil
+}
+
+func waitForRegionInstancesRefreshFunc(f getRegionInstanceManagerFunc, waitForUpdates bool, d *schema.ResourceData, meta interface{}) retry.StateRefreshFunc {
+	return func() (interface{}, string, error) {
+		m, err := f(d, meta)
+		if err != nil {
+			log.Printf("[WARNING] Error in fetching manager while waiting for instances to come up: %s\n", err)
+			return nil, "error", err
+		}
+		if m == nil {
+			// getManager/getRegional manager call handleNotFoundError, which will return a nil error and nil object in the case
+			// that the original error was a 404. if m == nil here, we will assume that it was not found return an "instance manager not found"
+			// error so that we can parse it later on and handle it there
+			return nil, "error", fmt.Errorf("instance manager not found")
+		}
+		status, _ := m["status"].(map[string]interface{})
+		isStable, _ := status["isStable"].(bool)
+		if isStable {
+			if waitForUpdates {
+				// waitForUpdates waits for versions to be reached and per instance configs to be updated (if present)
+				if stateful, ok := status["stateful"].(map[string]interface{}); ok {
+					if hasStateful, _ := stateful["hasStatefulConfig"].(bool); hasStateful {
+						if pics, ok := stateful["perInstanceConfigs"].(map[string]interface{}); ok {
+							if allEffective, _ := pics["allEffective"].(bool); !allEffective {
+								return false, "updating per instance configs", nil
+							}
+						}
+					}
+				}
+				if vt, ok := status["versionTarget"].(map[string]interface{}); ok {
+					if isReached, _ := vt["isReached"].(bool); !isReached {
+						return false, "reaching version target", nil
+					}
+				}
+				if aic, ok := status["allInstancesConfig"].(map[string]interface{}); ok {
+					if effective, _ := aic["effective"].(bool); !effective {
+						return false, "updating all instances config", nil
+					}
+				}
+			}
+			return true, "created", nil
+		} else {
+			return false, "creating", nil
+		}
+	}
+}
+
+func resourceComputeRegionInstanceGroupManagerRead(d *schema.ResourceData, meta interface{}) error {
+	config := meta.(*transport_tpg.Config)
+
+	manager, err := getRegionalManager(d, meta)
+	if err != nil {
+		return err
+	}
+	if manager == nil {
+		log.Printf("[WARN] Region Instance Group Manager %q not found, removing from state.", d.Id())
+		d.SetId("")
+		return nil
+	}
+
+	project, err := tpgresource.GetProject(d, config)
+	if err != nil {
+		return err
+	}
+
+	if err := d.Set("base_instance_name", manager["baseInstanceName"]); err != nil {
+		return fmt.Errorf("Error setting base_instance_name: %s", err)
+	}
+	if err := d.Set("name", manager["name"]); err != nil {
+		return fmt.Errorf("Error setting name: %s", err)
+	}
+	if err := d.Set("region", tpgresource.GetResourceNameFromSelfLink(manager["region"].(string))); err != nil {
+		return fmt.Errorf("Error setting region: %s", err)
+	}
+	if err := d.Set("creation_timestamp", manager["creationTimestamp"]); err != nil {
+		return fmt.Errorf("Error reading creation_timestamp: %s", err)
+	}
+	if err := d.Set("description", manager["description"]); err != nil {
+		return fmt.Errorf("Error setting description: %s", err)
+	}
+	if err := d.Set("instance_group_manager_id", getInt(manager["id"])); err != nil {
+		return fmt.Errorf("Error setting instance_group_manager_id: %s", err)
+	}
+	if err := d.Set("project", project); err != nil {
+		return fmt.Errorf("Error setting project: %s", err)
+	}
+	if err := d.Set("target_size", manager["targetSize"]); err != nil {
+		return fmt.Errorf("Error setting target_size: %s", err)
+	}
+	if err := d.Set("list_managed_instances_results", manager["listManagedInstancesResults"]); err != nil {
+		return fmt.Errorf("Error setting list_managed_instances_results: %s", err)
+	}
+	if rawPools, ok := manager["targetPools"].([]interface{}); ok {
+		pools := make([]string, 0, len(rawPools))
+		for _, p := range rawPools {
+			if s, ok := p.(string); ok {
+				pools = append(pools, tpgresource.ConvertSelfLinkToV1(s))
+			}
+		}
+		if err := d.Set("target_pools", pools); err != nil {
+			return fmt.Errorf("Error setting target_pools in state: %s", err.Error())
+		}
+	}
+	if err := d.Set("named_port", flattenRegionNamedPorts(manager["namedPorts"])); err != nil {
+		return fmt.Errorf("Error setting named_port in state: %s", err.Error())
+	}
+	if err := d.Set("fingerprint", manager["fingerprint"]); err != nil {
+		return fmt.Errorf("Error setting fingerprint: %s", err)
+	}
+	if instanceGroup, ok := manager["instanceGroup"].(string); ok {
+		if err := d.Set("instance_group", tpgresource.ConvertSelfLinkToV1(instanceGroup)); err != nil {
+			return fmt.Errorf("Error setting instance_group: %s", err)
+		}
+	}
+	if err := d.Set("distribution_policy_zones", flattenDistributionPolicy(manager["distributionPolicy"])); err != nil {
+		return err
+	}
+	var distTargetShape string
+	if dp, ok := manager["distributionPolicy"].(map[string]interface{}); ok {
+		distTargetShape, _ = dp["targetShape"].(string)
+	}
+	if err := d.Set("distribution_policy_target_shape", distTargetShape); err != nil {
+		return err
+	}
+	if selfLink, ok := manager["selfLink"].(string); ok {
+		if err := d.Set("self_link", tpgresource.ConvertSelfLinkToV1(selfLink)); err != nil {
+			return fmt.Errorf("Error setting self_link: %s", err)
+		}
+	}
+	if err := d.Set("auto_healing_policies", flattenRegionAutoHealingPolicies(manager["autoHealingPolicies"])); err != nil {
+		return fmt.Errorf("Error setting auto_healing_policies in state: %s", err.Error())
+	}
+	if err := d.Set("version", flattenRegionVersions(manager["versions"])); err != nil {
+		return err
+	}
+	if err = d.Set("standby_policy", flattenRegionStandbyPolicy(manager["standbyPolicy"])); err != nil {
+		return fmt.Errorf("Error setting standby_policy in state: %s", err.Error())
+	}
+	if err := d.Set("target_suspended_size", manager["targetSuspendedSize"]); err != nil {
+		return fmt.Errorf("Error setting target_suspended_size: %s", err)
+	}
+	if err := d.Set("target_stopped_size", manager["targetStoppedSize"]); err != nil {
+		return fmt.Errorf("Error setting target_stopped_size: %s", err)
+	}
+	if err := d.Set("instance_flexibility_policy", flattenInstanceFlexibilityPolicy(manager["instanceFlexibilityPolicy"])); err != nil {
+		return err
+	}
+	if err := d.Set("update_policy", flattenRegionUpdatePolicy(manager["updatePolicy"])); err != nil {
+		return fmt.Errorf("Error setting update_policy in state: %s", err.Error())
+	}
+	if err = d.Set("instance_lifecycle_policy", flattenRegionInstanceLifecyclePolicy(manager["instanceLifecyclePolicy"])); err != nil {
+		return fmt.Errorf("Error setting instance lifecycle policy in state: %s", err.Error())
+	}
+	if manager["allInstancesConfig"] != nil {
+		if err = d.Set("all_instances_config", flattenRegionAllInstancesConfig(manager["allInstancesConfig"])); err != nil {
+			return fmt.Errorf("Error setting all_instances_config in state: %s", err.Error())
+		}
+	}
+	statefulPolicyMap, _ := manager["statefulPolicy"].(map[string]interface{})
+	if err = d.Set("stateful_disk", flattenStatefulPolicy(statefulPolicyMap)); err != nil {
+		return fmt.Errorf("Error setting stateful_disk in state: %s", err.Error())
+	}
+	if err = d.Set("status", flattenRegionStatus(manager["status"])); err != nil {
+		return fmt.Errorf("Error setting status in state: %s", err.Error())
+	}
+	if err = d.Set("resource_policies", flattenRegionResourcePolicies(manager["resourcePolicies"])); err != nil {
+		return fmt.Errorf("Error setting resource_policies in state: %s", err.Error())
+	}
+	if err = d.Set("stateful_internal_ip", flattenStatefulPolicyStatefulInternalIps(d, statefulPolicyMap)); err != nil {
+		return fmt.Errorf("Error setting stateful_internal_ip in state: %s", err.Error())
+	}
+	if err = d.Set("stateful_external_ip", flattenStatefulPolicyStatefulExternalIps(d, statefulPolicyMap)); err != nil {
+		return fmt.Errorf("Error setting stateful_external_ip in state: %s", err.Error())
+	}
+	if err = d.Set("target_size_policy", flattenRegionTargetSizePolicy(manager["targetSizePolicy"])); err != nil {
+		return fmt.Errorf("Error setting target_size_policy in state: %s", err.Error())
+	}
+	// If unset in state set to default value
+	if d.Get("wait_for_instances_status").(string) == "" {
+		if err = d.Set("wait_for_instances_status", "STABLE"); err != nil {
+			return fmt.Errorf("Error setting wait_for_instances_status in state: %s", err.Error())
+		}
+	}
+
+        
+    if err := tpgresource.DeletionPolicyReadDefault(d, config, "DELETE"); err != nil{
+        return err
+    }
+    
+	return nil
+}
+
+func resourceComputeRegionInstanceGroupManagerUpdate(d *schema.ResourceData, meta interface{}) error {
+    
+    if tpgresource.DeletionPolicyPreUpdate(d, ResourceComputeRegionInstanceGroupManager) {
+        return ResourceComputeRegionInstanceGroupManager().Read(d, meta)
+    }
+    
+	config := meta.(*transport_tpg.Config)
+
+	userAgent, err :=  tpgresource.GenerateUserAgentString(d, config.UserAgent)
+	if err != nil {
+		return err
+	}
+
+	project, err := tpgresource.GetProject(d, config)
+	if err != nil {
+		return err
+	}
+
+	body := map[string]interface{}{
+		"fingerprint": d.Get("fingerprint").(string),
+	}
+	var change bool
+
+	if d.HasChange("target_pools") {
+		body["targetPools"] = tpgresource.ConvertStringSet(d.Get("target_pools").(*schema.Set))
+		change = true
+	}
+
+	if d.HasChange("auto_healing_policies") {
+		body["autoHealingPolicies"] = expandAutoHealingPolicies(d.Get("auto_healing_policies").([]interface{}))
+		change = true
+	}
+
+	if d.HasChange("version") {
+		body["versions"] = expandVersions(d.Get("version").([]interface{}))
+		change = true
+	}
+
+	var targetSizePatchUpdate bool
+	if d.HasChange("instance_flexibility_policy") {
+		flexibilityPolicy, err := expandInstanceFlexibilityPolicy(d)
+		if err != nil {
+			return err
+		}
+
+		body["instanceFlexibilityPolicy"] = flexibilityPolicy
+		change = true
+
+		// target size update should be done by patch instead of using resize
+		if d.HasChange("target_size") {
+			body["targetSize"] = int64(d.Get("target_size").(int))
+			targetSizePatchUpdate = true
+		}
+	}
+
+	if d.HasChange("distribution_policy_target_shape") {
+		body["distributionPolicy"] = expandDistributionPolicyForUpdate(d)
+		change = true
+	}
+
+	if d.HasChange("standby_policy") {
+		body["standbyPolicy"] = expandStandbyPolicy(d)
+		change = true
+	}
+
+	if d.HasChange("target_suspended_size") {
+		body["targetSuspendedSize"] = int64(d.Get("target_suspended_size").(int))
+		change = true
+	}
+
+	if d.HasChange("target_stopped_size") {
+		body["targetStoppedSize"] = int64(d.Get("target_stopped_size").(int))
+		change = true
+	}
+
+	if d.HasChange("update_policy") {
+		body["updatePolicy"] = expandRegionUpdatePolicy(d.Get("update_policy").([]interface{}))
+		change = true
+	}
+
+	if d.HasChange("instance_lifecycle_policy") {
+		body["instanceLifecyclePolicy"] = expandInstanceLifecyclePolicy(d.Get("instance_lifecycle_policy").([]interface{}))
+		change = true
+	}
+
+	if d.HasChange("stateful_internal_ip") || d.HasChange("stateful_external_ip") || d.HasChange("stateful_disk") {
+		body["statefulPolicy"] = expandStatefulPolicy(d)
+		change = true
+	}
+
+	if d.HasChange("all_instances_config") {
+		oldAic, newAic := d.GetChange("all_instances_config")
+		if newAic == nil || len(newAic.([]interface{})) == 0 {
+			body["allInstancesConfig"] = nil
+		} else {
+			body["allInstancesConfig"] = expandAllInstancesConfig(oldAic.([]interface{}), newAic.([]interface{}))
+		}
+		change = true
+	}
+
+	if d.HasChange("list_managed_instances_results") {
+		body["listManagedInstancesResults"] = d.Get("list_managed_instances_results").(string)
+		change = true
+	}
+
+	if d.HasChange("resource_policies") {
+		body["resourcePolicies"] = expandResourcePolicies(d.Get("resource_policies").([]interface{}))
+		change = true
+	}
+
+	if change {
+		url, err := tpgresource.ReplaceVars(d, config, "{{"{{"}}ComputeBasePath{{"}}"}}projects/{{"{{"}}project{{"}}"}}/regions/{{"{{"}}region{{"}}"}}/instanceGroupManagers/{{"{{"}}name{{"}}"}}")
+		if err != nil {
+			return err
+		}
+
+		res, err := transport_tpg.SendRequest(transport_tpg.SendRequestOptions{
+			Config:    config,
+			Method:    "PATCH",
+			Project:   project,
+			RawURL:    url,
+			UserAgent: userAgent,
+			Body:      body,
+		})
+		if err != nil {
+			return fmt.Errorf("Error updating region managed group instances: %s", err)
+		}
+
+		err = ComputeOperationWaitTime(config, res, project, "Updating region managed group instances", userAgent, d.Timeout(schema.TimeoutUpdate))
+		if err != nil {
+			return err
+		}
+	}
+
+	// named ports can't be updated through PATCH
+	// so we call the update method on the region instance group, instead of the rigm
+	if d.HasChange("named_port") {
+		d.Partial(true)
+		namedPorts := getNamedPortsBeta(d.Get("named_port").(*schema.Set).List())
+		setNamedPortsBody := map[string]interface{}{
+			"namedPorts": namedPorts,
+		}
+
+		url, err := tpgresource.ReplaceVars(d, config, "{{"{{"}}ComputeBasePath{{"}}"}}projects/{{"{{"}}project{{"}}"}}/regions/{{"{{"}}region{{"}}"}}/instanceGroups/{{"{{"}}name{{"}}"}}/setNamedPorts")
+		if err != nil {
+			return err
+		}
+
+		res, err := transport_tpg.SendRequest(transport_tpg.SendRequestOptions{
+			Config:    config,
+			Method:    "POST",
+			Project:   project,
+			RawURL:    url,
+			UserAgent: userAgent,
+			Body:      setNamedPortsBody,
+		})
+		if err != nil {
+			return fmt.Errorf("Error updating RegionInstanceGroupManager: %s", err)
+		}
+
+		err = ComputeOperationWaitTime(config, res, project, "Updating RegionInstanceGroupManager", userAgent, d.Timeout(schema.TimeoutUpdate))
+		if err != nil {
+			return err
+		}
+	}
+
+	// target size should use resize
+	if d.HasChange("target_size") && !targetSizePatchUpdate {
+		d.Partial(true)
+		targetSize := int64(d.Get("target_size").(int))
+		url, err := tpgresource.ReplaceVars(d, config, "{{"{{"}}ComputeBasePath{{"}}"}}projects/{{"{{"}}project{{"}}"}}/regions/{{"{{"}}region{{"}}"}}/instanceGroupManagers/{{"{{"}}name{{"}}"}}/resize")
+		if err != nil {
+			return err
+		}
+		url, err = transport_tpg.AddQueryParams(url, map[string]string{
+			"size": fmt.Sprintf("%d", targetSize),
+		})
+		if err != nil {
+			return err
+		}
+		res, err := transport_tpg.SendRequest(transport_tpg.SendRequestOptions{
+			Config:    config,
+			Method:    "POST",
+			Project:   project,
+			RawURL:    url,
+			UserAgent: userAgent,
+		})
+		if err != nil {
+			return fmt.Errorf("Error resizing RegionInstanceGroupManager: %s", err)
+		}
+
+		err = ComputeOperationWaitTime(config, res, project, "Resizing RegionInstanceGroupManager", userAgent, d.Timeout(schema.TimeoutUpdate))
+		if err != nil {
+			return err
+		}
+	}
+
+	d.Partial(false)
+
+	if d.Get("wait_for_instances").(bool) {
+		err := computeRIGMWaitForInstanceStatus(d, meta)
+		if err != nil {
+			return err
+		}
+	}
+
+	return resourceComputeRegionInstanceGroupManagerRead(d, meta)
+}
+
+func resourceComputeRegionInstanceGroupManagerDelete(d *schema.ResourceData, meta interface{}) error {
+    
+    if ok, err := tpgresource.DeletionPolicyPreDelete(d); err != nil{
+        return err
+    }else if ok{
+        return nil
+    }
+    	
+    config :=  meta.(*transport_tpg.Config)
+
+	userAgent, err :=  tpgresource.GenerateUserAgentString(d, config.UserAgent)
+	if err != nil {
+		return err
+	}
+
+	project, err := tpgresource.GetProject(d, config)
+	if err != nil {
+		return err
+	}
+
+	url, err := tpgresource.ReplaceVars(d, config, "{{"{{"}}ComputeBasePath{{"}}"}}projects/{{"{{"}}project{{"}}"}}/regions/{{"{{"}}region{{"}}"}}/instanceGroupManagers/{{"{{"}}name{{"}}"}}")
+	if err != nil {
+		return err
+	}
+
+	res, err := transport_tpg.SendRequest(transport_tpg.SendRequestOptions{
+		Config:    config,
+		Method:    "DELETE",
+		Project:   project,
+		RawURL:    url,
+		UserAgent: userAgent,
+	})
+	if err != nil {
+		return fmt.Errorf("Error deleting region instance group manager: %s", err)
+	}
+
+	// Wait for the operation to complete
+	err = ComputeOperationWaitTime(config, res, project, "Deleting RegionInstanceGroupManager", userAgent, d.Timeout(schema.TimeoutDelete))
+	if err != nil {
+		return fmt.Errorf("Error waiting for delete to complete: %s", err)
+	}
+
+	d.SetId("")
+	return nil
+}
+
+func expandRegionUpdatePolicy(configured []interface{}) map[string]interface{} {
+	updatePolicy := map[string]interface{}{}
+
+	for _, raw := range configured {
+		data := raw.(map[string]interface{})
+
+		updatePolicy["minimalAction"] = data["minimal_action"].(string)
+		mostDisruptiveAllowedAction := data["most_disruptive_allowed_action"].(string)
+		if mostDisruptiveAllowedAction != "" {
+			updatePolicy["mostDisruptiveAllowedAction"] = mostDisruptiveAllowedAction
+		} else {
+			updatePolicy["mostDisruptiveAllowedAction"] = nil
+		}
+		updatePolicy["type"] = data["type"].(string)
+		updatePolicy["instanceRedistributionType"] = data["instance_redistribution_type"].(string)
+		if rm := data["replacement_method"].(string); rm != "" {
+			updatePolicy["replacementMethod"] = rm
+		}
+{{- if ne $.TargetVersionName "ga" }}
+		updatePolicy["minReadySec"] = int64(data["min_ready_sec"].(int))
+{{- end }}
+
+		// percent and fixed values are conflicting
+		// when the percent values are set, the fixed values will be ignored
+		if v := data["max_surge_percent"]; v.(int) > 0 {
+			updatePolicy["maxSurge"] = map[string]interface{}{
+				"percent": int64(v.(int)),
+				"fixed":   nil,
+			}
+		} else {
+			updatePolicy["maxSurge"] = map[string]interface{}{
+				"fixed":   int64(data["max_surge_fixed"].(int)),
+				"percent": nil,
+			}
+		}
+
+		if v := data["max_unavailable_percent"]; v.(int) > 0 {
+			updatePolicy["maxUnavailable"] = map[string]interface{}{
+				"percent": int64(v.(int)),
+				"fixed":   nil,
+			}
+		} else {
+			updatePolicy["maxUnavailable"] = map[string]interface{}{
+				"fixed":   int64(data["max_unavailable_fixed"].(int)),
+				"percent": nil,
+			}
+		}
+	}
+	return updatePolicy
+}
+
+func flattenRegionUpdatePolicy(updatePolicyRaw interface{}) []map[string]interface{} {
+	results := []map[string]interface{}{}
+	updatePolicy, ok := updatePolicyRaw.(map[string]interface{})
+	if !ok || updatePolicy == nil {
+		return results
+	}
+	up := map[string]interface{}{}
+	if maxSurge, ok := updatePolicy["maxSurge"].(map[string]interface{}); ok && maxSurge != nil {
+		up["max_surge_fixed"] = getInt(maxSurge["fixed"])
+		up["max_surge_percent"] = getInt(maxSurge["percent"])
+	} else {
+		up["max_surge_fixed"] = 0
+		up["max_surge_percent"] = 0
+	}
+	if maxUnavailable, ok := updatePolicy["maxUnavailable"].(map[string]interface{}); ok && maxUnavailable != nil {
+		up["max_unavailable_fixed"] = getInt(maxUnavailable["fixed"])
+		up["max_unavailable_percent"] = getInt(maxUnavailable["percent"])
+	} else {
+		up["max_unavailable_fixed"] = 0
+		up["max_unavailable_percent"] = 0
+	}
+{{- if ne $.TargetVersionName "ga" }}
+	up["min_ready_sec"] = getInt(updatePolicy["minReadySec"])
+{{- end }}
+	up["minimal_action"] = updatePolicy["minimalAction"]
+	up["most_disruptive_allowed_action"] = updatePolicy["mostDisruptiveAllowedAction"]
+	up["type"] = updatePolicy["type"]
+	up["instance_redistribution_type"] = updatePolicy["instanceRedistributionType"]
+	up["replacement_method"] = updatePolicy["replacementMethod"]
+
+	results = append(results, up)
+	return results
+}
+
+func expandInstanceFlexibilityPolicy(d *schema.ResourceData) (map[string]interface{}, error) {
+	oldFlexibilityPolicy, newFlexibilityPolicy := d.GetChange("instance_flexibility_policy")
+
+	instanceSelections := map[string]interface{}{}
+	for _, flexibilityPolicy := range newFlexibilityPolicy.([]any) {
+		flexibilityPolicyData := flexibilityPolicy.(map[string]any)
+		selections, err := expandInstanceSelections(flexibilityPolicyData["instance_selections"].(*schema.Set).List())
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range selections {
+			instanceSelections[k] = v
+		}
+	}
+
+	for _, flexibilityPolicy := range oldFlexibilityPolicy.([]any) {
+		flexibilityPolicyData := flexibilityPolicy.(map[string]any)
+		for _, instanceSelection := range flexibilityPolicyData["instance_selections"].(*schema.Set).List() {
+			instanceSelectionData := instanceSelection.(map[string]any)
+			name := instanceSelectionData["name"].(string)
+			if _, exist := instanceSelections[name]; !exist {
+				instanceSelections[name] = nil
+			}
+		}
+	}
+
+	if len(instanceSelections) == 0 {
+		return map[string]interface{}{}, nil
+	}
+	return map[string]interface{}{
+		"instanceSelections": instanceSelections,
+	}, nil
+}
+
+func expandInstanceSelections(instanceSelections []any) (map[string]interface{}, error) {
+	instanceSelectionsMap := make(map[string]interface{})
+	for _, instanceSelectionRaw := range instanceSelections {
+		instanceSelectionData := instanceSelectionRaw.(map[string]any)
+
+		{{- if ne $.TargetVersionName `ga` }}
+		disks, err := expandInstanceSelectionDisks(instanceSelectionData["disks"].([]any))
+		if err != nil {
+			return nil, err
+		}
+		{{- end }}
+
+		instanceSelection := map[string]interface{}{
+			"machineTypes": tpgresource.ConvertStringSet(instanceSelectionData["machine_types"].(*schema.Set)),
+		}
+		if rank := int64(instanceSelectionData["rank"].(int)); rank != 0 {
+			instanceSelection["rank"] = rank
+		}
+		{{- if ne $.TargetVersionName `ga` }}
+		if mcp := instanceSelectionData["min_cpu_platform"].(string); mcp != "" {
+			instanceSelection["minCpuPlatform"] = mcp
+		}
+		if len(disks) > 0 {
+			instanceSelection["disks"] = disks
+		}
+		{{- end }}
+		instanceSelectionsMap[instanceSelectionData["name"].(string)] = instanceSelection
+	}
+	return instanceSelectionsMap, nil
+}
+
+{{- if ne $.TargetVersionName `ga` }}
+func expandInstanceSelectionDisks(disks []any) ([]interface{}, error) {
+  attachedDisks := make([]interface{}, 0, len(disks))
+  for _, diskRaw := range disks {
+      diskData := diskRaw.(map[string]any)
+      disk := map[string]interface{}{
+          "autoDelete": diskData["auto_delete"].(bool),
+      }
+      if v := diskData["device_name"].(string); v != "" {
+          disk["deviceName"] = v
+      }
+      if v := diskData["boot"].(bool); v {
+          disk["boot"] = v
+      }
+      if v := diskData["interface"].(string); v != "" {
+          disk["interface"] = v
+      }
+      if v := diskData["mode"].(string); v != "" {
+          disk["mode"] = v
+      }
+      if v := diskData["type"].(string); v != "" {
+          disk["type"] = v
+      }
+      if v := diskData["architecture"].(string); v != "" {
+          disk["architecture"] = v
+      }
+
+      if v, exists := diskData["disk_size_gb"]; exists && v.(int) != 0 {
+          disk["diskSizeGb"] = strconv.Itoa(v.(int))
+      }
+
+      if v, exists := diskData["disk_encryption_key"]; exists && v != nil {
+          keys := v.([]any)
+          if len(keys) > 0 && keys[0] != nil {
+              keyData := keys[0].(map[string]any)
+              encKey := map[string]interface{}{}
+              if k := keyData["raw_key"].(string); k != "" {
+                  encKey["rawKey"] = k
+              }
+              if k := keyData["rsa_encrypted_key"].(string); k != "" {
+                  encKey["rsaEncryptedKey"] = k
+              }
+              if k := keyData["kms_key_service_account"].(string); k != "" {
+                  encKey["kmsKeyServiceAccount"] = k
+              }
+              if k := keyData["kms_key_self_link"].(string); k != "" {
+                  encKey["kmsKeyName"] = k
+              }
+              if len(encKey) > 0 {
+                  disk["diskEncryptionKey"] = encKey
+              }
+          }
+      }
+
+      if v, exists := diskData["source"]; exists && v.(string) != "" {
+          disk["source"] = v.(string)
+          conflicts := []string{"disk_size_gb", "disk_name", "disk_type", "provisioned_iops", "provisioned_throughput", "source_image", "source_snapshot", "labels"}
+          var foundConflicts []string
+          for _, conflict := range conflicts {
+              if v, exists := diskData[conflict]; exists && hasFieldSet(v) {
+                  foundConflicts = append(foundConflicts, conflict)
+              }
+          }
+          if len(foundConflicts) > 0 {
+              return nil, fmt.Errorf("Cannot use `source` with conflicting fields: [%s]", strings.Join(foundConflicts, ", "))
+          }
+      } else {
+          initializeParams := map[string]interface{}{}
+          hasInitializeParams := false
+
+          if v, exists := diskData["disk_name"]; exists && v.(string) != "" {
+              initializeParams["diskName"] = v.(string)
+              hasInitializeParams = true
+          }
+
+          if v, exists := diskData["disk_size_gb"]; exists && v.(int) != 0 {
+              initializeParams["diskSizeGb"] = strconv.Itoa(v.(int))
+              hasInitializeParams = true
+          }
+
+          if v, exists := diskData["disk_type"]; exists && v.(string) != "" {
+              initializeParams["diskType"] = v.(string)
+              hasInitializeParams = true
+          }
+
+          if v, exists := diskData["provisioned_iops"]; exists && v.(int) != 0 {
+              initializeParams["provisionedIops"] = strconv.Itoa(v.(int))
+              hasInitializeParams = true
+          }
+
+          if v, exists := diskData["provisioned_throughput"]; exists && v.(int) != 0 {
+              initializeParams["provisionedThroughput"] = strconv.Itoa(v.(int))
+              hasInitializeParams = true
+          }
+
+          if v, exists := diskData["resource_manager_tags"]; exists && v != nil && v.(*schema.Set).Len() > 0 {
+              rmTags := make(map[string]string)
+              for _, rmTagRaw := range v.(*schema.Set).List() {
+                  rmTag := rmTagRaw.(map[string]any)
+                  rmTags[rmTag["key"].(string)] = rmTag["value"].(string)
+              }
+              initializeParams["resourceManagerTags"] = rmTags
+              hasInitializeParams = true
+          }
+
+          if v, exists := diskData["labels"]; exists && v != nil && v.(*schema.Set).Len() > 0 {
+              labels := make(map[string]string)
+              for _, labelRaw := range v.(*schema.Set).List() {
+                  label := labelRaw.(map[string]any)
+                  labels[label["key"].(string)] = label["value"].(string)
+              }
+              initializeParams["labels"] = labels
+              hasInitializeParams = true
+          }
+
+          if v, exists := diskData["source_image"]; exists && v.(string) != "" {
+              initializeParams["sourceImage"] = v.(string)
+              hasInitializeParams = true
+          }
+
+          if v, exists := diskData["source_image_encryption_key"]; exists && v != nil {
+              keys := v.([]any)
+              if len(keys) > 0 && keys[0] != nil {
+                  keyData := keys[0].(map[string]any)
+                  encKey := map[string]interface{}{}
+                  if k := keyData["raw_key"].(string); k != "" {
+                      encKey["rawKey"] = k
+                  }
+                  if k := keyData["rsa_encrypted_key"].(string); k != "" {
+                      encKey["rsaEncryptedKey"] = k
+                  }
+                  if k := keyData["kms_key_service_account"].(string); k != "" {
+                      encKey["kmsKeyServiceAccount"] = k
+                  }
+                  if k := keyData["kms_key_self_link"].(string); k != "" {
+                      encKey["kmsKeyName"] = k
+                  }
+                  if len(encKey) > 0 {
+                      initializeParams["sourceImageEncryptionKey"] = encKey
+                      hasInitializeParams = true
+                  }
+              }
+          }
+
+          if v, exists := diskData["source_snapshot"]; exists && v.(string) != "" {
+              initializeParams["sourceSnapshot"] = v.(string)
+              hasInitializeParams = true
+          }
+
+          if v, exists := diskData["source_snapshot_encryption_key"]; exists && v != nil {
+              keys := v.([]any)
+              if len(keys) > 0 && keys[0] != nil {
+                  keyData := keys[0].(map[string]any)
+                  encKey := map[string]interface{}{}
+                  if k := keyData["raw_key"].(string); k != "" {
+                      encKey["rawKey"] = k
+                  }
+                  if k := keyData["rsa_encrypted_key"].(string); k != "" {
+                      encKey["rsaEncryptedKey"] = k
+                  }
+                  if k := keyData["kms_key_service_account"].(string); k != "" {
+                      encKey["kmsKeyServiceAccount"] = k
+                  }
+                  if k := keyData["kms_key_self_link"].(string); k != "" {
+                      encKey["kmsKeyName"] = k
+                  }
+                  if len(encKey) > 0 {
+                      initializeParams["sourceSnapshotEncryptionKey"] = encKey
+                      hasInitializeParams = true
+                  }
+              }
+          }
+
+          if v, exists := diskData["architecture"]; exists && v.(string) != "" {
+              initializeParams["architecture"] = v.(string)
+              hasInitializeParams = true
+          }
+
+          if v, exists := diskData["guest_os_features"]; exists && len(v.([]any)) > 0 {
+              features := make([]interface{}, 0)
+              for _, feature := range v.([]any) {
+                  features = append(features, map[string]interface{}{"type": feature.(string)})
+              }
+              initializeParams["guestOsFeatures"] = features
+              hasInitializeParams = true
+          }
+
+          if v, exists := diskData["resource_policies"]; exists && len(v.([]any)) > 0 {
+              initializeParams["resourcePolicies"] = tpgresource.ConvertStringArr(v.([]any))
+              hasInitializeParams = true
+          }
+
+          if hasInitializeParams {
+              disk["initializeParams"] = initializeParams
+          }
+      }
+      attachedDisks = append(attachedDisks, disk)
+  }
+  return attachedDisks, nil
+}
+
+func hasFieldSet(d any) bool {
+    switch val := d.(type) {
+    case int:
+        return val != 0
+    case string:
+        return val != ""
+    case *schema.Set:
+        return val.Len() > 0
+    default:
+        return val != nil
+    }
+}
+{{- end }}
+
+func expandDistributionPolicyForUpdate(d *schema.ResourceData) map[string]interface{} {
+	dpts := d.Get("distribution_policy_target_shape").(string)
+	if dpts == "" {
+		return nil
+	}
+
+	return map[string]interface{}{"targetShape": dpts}
+}
+
+func expandDistributionPolicyForCreate(d *schema.ResourceData) map[string]interface{} {
+	dpz := d.Get("distribution_policy_zones").(*schema.Set)
+	dpts := d.Get("distribution_policy_target_shape").(string)
+	if dpz.Len() == 0 && dpts == "" {
+		return nil
+	}
+	distributionPolicy := map[string]interface{}{}
+
+	if dpz.Len() > 0 {
+		zones := make([]interface{}, 0, dpz.Len())
+		for _, raw := range dpz.List() {
+			data := raw.(string)
+			zones = append(zones, map[string]interface{}{"zone": "zones/" + data})
+		}
+		distributionPolicy["zones"] = zones
+	}
+	if dpts != "" {
+		distributionPolicy["targetShape"] = dpts
+	}
+	return distributionPolicy
+}
+
+func flattenInstanceFlexibilityPolicy(instanceFlexibilityPolicyRaw interface{}) []any {
+	flattenedInstanceFlexibilityPolicy := []any{}
+	instanceFlexibilityPolicy, ok := instanceFlexibilityPolicyRaw.(map[string]interface{})
+	if !ok || instanceFlexibilityPolicy == nil {
+		return flattenedInstanceFlexibilityPolicy
+	}
+	instanceSelectionsMap := map[string]any{}
+	instanceSelectionsMap["instance_selections"] = flattenInstanceSelections(instanceFlexibilityPolicy["instanceSelections"])
+	flattenedInstanceFlexibilityPolicy = append(flattenedInstanceFlexibilityPolicy, instanceSelectionsMap)
+	return flattenedInstanceFlexibilityPolicy
+}
+
+func flattenInstanceSelections(instanceSelectionsRaw interface{}) []map[string]any {
+	instanceSelectionsMap := make([]map[string]any, 0)
+	instanceSelections, ok := instanceSelectionsRaw.(map[string]interface{})
+	if !ok || instanceSelections == nil {
+		return instanceSelectionsMap
+	}
+	for instanceSelectionName, instanceSelectionRaw := range instanceSelections {
+		instanceSelection, ok := instanceSelectionRaw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		instanceSelectionData := make(map[string]any)
+		instanceSelectionData["name"] = instanceSelectionName
+		instanceSelectionData["rank"] = getInt(instanceSelection["rank"])
+		instanceSelectionData["machine_types"] = instanceSelection["machineTypes"]
+		{{- if ne $.TargetVersionName `ga` }}
+		instanceSelectionData["min_cpu_platform"] = instanceSelection["minCpuPlatform"]
+		instanceSelectionData["disks"] = flattenInstanceSelectionDisks(instanceSelection["disks"])
+		{{- end }}
+		instanceSelectionsMap = append(instanceSelectionsMap, instanceSelectionData)
+	}
+	return instanceSelectionsMap
+}
+
+{{- if ne $.TargetVersionName `ga` }}
+func flattenInstanceSelectionDisks(disksRaw interface{}) []map[string]any {
+    flattenedDisks := make([]map[string]any, 0)
+    disks, ok := disksRaw.([]interface{})
+    if !ok {
+        return flattenedDisks
+    }
+    for _, diskRaw := range disks {
+        disk, ok := diskRaw.(map[string]interface{})
+        if !ok {
+            continue
+        }
+        diskData := make(map[string]any)
+
+        diskData["auto_delete"] = disk["autoDelete"]
+        diskData["boot"] = disk["boot"]
+        diskData["device_name"] = disk["deviceName"]
+        diskData["interface"] = disk["interface"]
+        diskData["mode"] = disk["mode"]
+        diskData["type"] = disk["type"]
+        diskData["architecture"] = disk["architecture"]
+
+        if v := getInt(disk["diskSizeGb"]); v != 0 {
+            diskData["disk_size_gb"] = v
+        }
+
+        if encKey, ok := disk["diskEncryptionKey"].(map[string]interface{}); ok && encKey != nil {
+            encryption := make([]map[string]any, 1)
+            encryption[0] = map[string]any{
+                "raw_key":                encKey["rawKey"],
+                "rsa_encrypted_key":      encKey["rsaEncryptedKey"],
+                "kms_key_self_link":      encKey["kmsKeyName"],
+                "kms_key_service_account": encKey["kmsKeyServiceAccount"],
+            }
+            diskData["disk_encryption_key"] = encryption
+        }
+
+        if source, ok := disk["source"].(string); ok && source != "" {
+            diskData["source"] = source
+        } else if initParams, ok := disk["initializeParams"].(map[string]interface{}); ok && initParams != nil {
+            if v, ok := initParams["diskName"].(string); ok && v != "" {
+                diskData["disk_name"] = v
+            }
+            if v := getInt(initParams["diskSizeGb"]); v != 0 {
+                diskData["disk_size_gb"] = v
+            }
+            if v, ok := initParams["diskType"].(string); ok && v != "" {
+                diskData["disk_type"] = v
+            }
+            if v := getInt(initParams["provisionedIops"]); v != 0 {
+                diskData["provisioned_iops"] = v
+            }
+            if v := getInt(initParams["provisionedThroughput"]); v != 0 {
+                diskData["provisioned_throughput"] = v
+            }
+            if rmTagsRaw, ok := initParams["resourceManagerTags"].(map[string]interface{}); ok && rmTagsRaw != nil {
+                rmTags := make([]any, 0, len(rmTagsRaw))
+                for k, v := range rmTagsRaw {
+                    rmTags = append(rmTags, map[string]any{"key": k, "value": v})
+                }
+                diskData["resource_manager_tags"] = rmTags
+            }
+            if labelsRaw, ok := initParams["labels"].(map[string]interface{}); ok && labelsRaw != nil {
+                labels := make([]any, 0, len(labelsRaw))
+                for k, v := range labelsRaw {
+                    labels = append(labels, map[string]any{"key": k, "value": v})
+                }
+                diskData["labels"] = labels
+            }
+            if rpRaw, ok := initParams["resourcePolicies"].([]interface{}); ok && rpRaw != nil {
+                diskData["resource_policies"] = rpRaw
+            }
+            if v, ok := initParams["sourceImage"].(string); ok && v != "" {
+                diskData["source_image"] = v
+            }
+            if encKey, ok := initParams["sourceImageEncryptionKey"].(map[string]interface{}); ok && encKey != nil {
+                encryption := make([]map[string]any, 1)
+                encryption[0] = map[string]any{
+                    "raw_key":                encKey["rawKey"],
+                    "rsa_encrypted_key":      encKey["rsaEncryptedKey"],
+                    "kms_key_service_account": encKey["kmsKeyServiceAccount"],
+                    "kms_key_self_link":      encKey["kmsKeyName"],
+                }
+                diskData["source_image_encryption_key"] = encryption
+            }
+            if v, ok := initParams["sourceSnapshot"].(string); ok && v != "" {
+                diskData["source_snapshot"] = v
+            }
+            if encKey, ok := initParams["sourceSnapshotEncryptionKey"].(map[string]interface{}); ok && encKey != nil {
+                encryption := make([]map[string]any, 1)
+                encryption[0] = map[string]any{
+                    "raw_key":                encKey["rawKey"],
+                    "rsa_encrypted_key":      encKey["rsaEncryptedKey"],
+                    "kms_key_service_account": encKey["kmsKeyServiceAccount"],
+                    "kms_key_self_link":      encKey["kmsKeyName"],
+                }
+                diskData["source_snapshot_encryption_key"] = encryption
+            }
+            if v, ok := initParams["architecture"].(string); ok && v != "" {
+                diskData["architecture"] = v
+            }
+            if guestOsRaw, ok := initParams["guestOsFeatures"].([]interface{}); ok && guestOsRaw != nil {
+                features := make([]any, 0, len(guestOsRaw))
+                for _, featureRaw := range guestOsRaw {
+                    if feature, ok := featureRaw.(map[string]interface{}); ok {
+                        features = append(features, feature["type"])
+                    }
+                }
+                diskData["guest_os_features"] = features
+            }
+        }
+        flattenedDisks = append(flattenedDisks, diskData)
+    }
+    return flattenedDisks
+}
+{{- end }}
+
+func flattenDistributionPolicy(distributionPolicyRaw interface{}) []string {
+	zones := make([]string, 0)
+	distributionPolicy, ok := distributionPolicyRaw.(map[string]interface{})
+	if !ok || distributionPolicy == nil {
+		return zones
+	}
+	if rawZones, ok := distributionPolicy["zones"].([]interface{}); ok {
+		for _, rawZone := range rawZones {
+			if zone, ok := rawZone.(map[string]interface{}); ok {
+				if zoneStr, ok := zone["zone"].(string); ok {
+					zones = append(zones, tpgresource.GetResourceNameFromSelfLink(zoneStr))
+				}
+			}
+		}
+	}
+	return zones
+}
+
+func getInt(v interface{}) int64 {
+	switch t := v.(type) {
+	case int:
+		return int64(t)
+	case int64:
+		return t
+	case float64:
+		return int64(t)
+	case string:
+		i, _ := strconv.ParseInt(t, 10, 64)
+		return i
+	default:
+		return 0
+	}
+}
+
+func flattenRegionNamedPorts(raw interface{}) []map[string]interface{} {
+	result := make([]map[string]interface{}, 0)
+	namedPorts, ok := raw.([]interface{})
+	if !ok {
+		return result
+	}
+	for _, npRaw := range namedPorts {
+		np, ok := npRaw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		result = append(result, map[string]interface{}{
+			"name": np["name"],
+			"port": getInt(np["port"]),
+		})
+	}
+	return result
+}
+
+func flattenRegionAutoHealingPolicies(raw interface{}) []map[string]interface{} {
+	result := make([]map[string]interface{}, 0)
+	policies, ok := raw.([]interface{})
+	if !ok {
+		return result
+	}
+	for _, pRaw := range policies {
+		p, ok := pRaw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		result = append(result, map[string]interface{}{
+			"health_check":      p["healthCheck"],
+			"initial_delay_sec": getInt(p["initialDelaySec"]),
+		})
+	}
+	return result
+}
+
+func flattenRegionVersions(raw interface{}) []map[string]interface{} {
+	result := make([]map[string]interface{}, 0)
+	versions, ok := raw.([]interface{})
+	if !ok {
+		return result
+	}
+	for _, vRaw := range versions {
+		v, ok := vRaw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		versionMap := map[string]interface{}{
+			"name":              v["name"],
+			"instance_template": tpgresource.ConvertSelfLinkToV1(v["instanceTemplate"].(string)),
+		}
+		if ts, ok := v["targetSize"].(map[string]interface{}); ok && ts != nil {
+			if pct := getInt(ts["percent"]); pct > 0 {
+				tsEntry := map[string]interface{}{"percent": pct}
+				versionMap["target_size"] = []map[string]interface{}{tsEntry}
+			} else if fixed := getInt(ts["fixed"]); fixed > 0 {
+				tsEntry := map[string]interface{}{"fixed": fixed}
+				versionMap["target_size"] = []map[string]interface{}{tsEntry}
+			} else {
+				versionMap["target_size"] = []map[string]interface{}{}
+			}
+		} else {
+			versionMap["target_size"] = []map[string]interface{}{}
+		}
+		result = append(result, versionMap)
+	}
+	return result
+}
+
+func flattenRegionStandbyPolicy(raw interface{}) []map[string]any {
+	results := []map[string]any{}
+	sp, ok := raw.(map[string]interface{})
+	if !ok || sp == nil {
+		return results
+	}
+	return append(results, map[string]any{
+		"initial_delay_sec": getInt(sp["initialDelaySec"]),
+		"mode":              sp["mode"],
+	})
+}
+
+func flattenRegionInstanceLifecyclePolicy(raw interface{}) []map[string]interface{} {
+	results := []map[string]interface{}{}
+	ilp, ok := raw.(map[string]interface{})
+	if !ok || ilp == nil {
+		return results
+	}
+	entry := map[string]interface{}{
+		"force_update_on_repair":    ilp["forceUpdateOnRepair"],
+		"default_action_on_failure": ilp["defaultActionOnFailure"],
+		"on_failed_health_check": ilp["onFailedHealthCheck"],
+	}
+	if onRepair, ok := ilp["onRepair"].(map[string]interface{}); ok && onRepair != nil {
+		onRepairEntry := map[string]any{"allow_changing_zone": onRepair["allowChangingZone"]}
+		entry["on_repair"] = []map[string]any{onRepairEntry}
+	}
+	return append(results, entry)
+}
+
+func flattenRegionAllInstancesConfig(raw interface{}) []map[string]interface{} {
+	results := []map[string]interface{}{}
+	aic, ok := raw.(map[string]interface{})
+	if !ok || aic == nil {
+		return results
+	}
+	props, _ := aic["properties"].(map[string]interface{})
+	if props == nil {
+		return results
+	}
+	entry := map[string]interface{}{}
+	if metadata, ok := props["metadata"].(map[string]interface{}); ok && len(metadata) > 0 {
+		m := make(map[string]string, len(metadata))
+		for k, v := range metadata {
+			m[k], _ = v.(string)
+		}
+		entry["metadata"] = m
+	}
+	if labels, ok := props["labels"].(map[string]interface{}); ok && len(labels) > 0 {
+		l := make(map[string]string, len(labels))
+		for k, v := range labels {
+			l[k], _ = v.(string)
+		}
+		entry["labels"] = l
+	}
+	return append(results, entry)
+}
+
+func flattenRegionStatus(raw interface{}) []map[string]interface{} {
+	results := []map[string]interface{}{}
+	status, ok := raw.(map[string]interface{})
+	if !ok || status == nil {
+		return results
+	}
+	data := map[string]interface{}{
+		"is_stable":      status["isStable"],
+		"stateful":       flattenRegionStatusStateful(status["stateful"]),
+		"version_target": flattenRegionStatusVersionTarget(status["versionTarget"]),
+	}
+	if status["allInstancesConfig"] != nil {
+		data["all_instances_config"] = flattenRegionStatusAllInstancesConfig(status["allInstancesConfig"])
+	}
+	return append(results, data)
+}
+
+func flattenRegionStatusStateful(raw interface{}) []map[string]interface{} {
+	results := []map[string]interface{}{}
+	stateful, ok := raw.(map[string]interface{})
+	if !ok || stateful == nil {
+		return results
+	}
+	pics := []map[string]interface{}{}
+	if picRaw, ok := stateful["perInstanceConfigs"].(map[string]interface{}); ok {
+		pics = append(pics, map[string]interface{}{"all_effective": picRaw["allEffective"]})
+	}
+	return append(results, map[string]interface{}{
+		"has_stateful_config":  stateful["hasStatefulConfig"],
+		"per_instance_configs": pics,
+	})
+}
+
+func flattenRegionStatusVersionTarget(raw interface{}) []map[string]interface{} {
+	results := []map[string]interface{}{}
+	vt, ok := raw.(map[string]interface{})
+	if !ok || vt == nil {
+		return results
+	}
+	return append(results, map[string]interface{}{"is_reached": vt["isReached"]})
+}
+
+func flattenRegionStatusAllInstancesConfig(raw interface{}) []map[string]interface{} {
+	results := []map[string]interface{}{}
+	aic, ok := raw.(map[string]interface{})
+	if !ok || aic == nil {
+		return results
+	}
+	return append(results, map[string]interface{}{
+		"effective":        aic["effective"],
+		"current_revision": aic["currentRevision"],
+	})
+}
+
+func flattenRegionResourcePolicies(raw interface{}) []map[string]interface{} {
+	results := []map[string]interface{}{}
+	rp, ok := raw.(map[string]interface{})
+	if !ok || rp == nil {
+		return results
+	}
+	return append(results, map[string]interface{}{"workload_policy": rp["workloadPolicy"]})
+}
+
+func flattenRegionTargetSizePolicy(raw interface{}) []map[string]interface{} {
+	tsp, ok := raw.(map[string]interface{})
+	if !ok || tsp == nil {
+		return nil
+	}
+	entry := map[string]interface{}{"mode": tsp["mode"]}
+	return []map[string]interface{}{entry}
+}
+
+func hashZoneFromSelfLinkOrResourceName(value interface{}) int {
+	parts := strings.Split(value.(string), "/")
+	resource := parts[len(parts)-1]
+
+	return tpgresource.Hashcode(resource)
+}
+
+func resourceRegionInstanceGroupManagerStateImporter(d *schema.ResourceData, meta interface{}) ([]*schema.ResourceData, error) {
+	if err := d.Set("wait_for_instances", false); err != nil {
+		return nil, fmt.Errorf("Error setting wait_for_instances: %s", err)
+	}
+	if err := d.Set("wait_for_instances_status", "STABLE"); err != nil {
+		return nil, fmt.Errorf("Error setting wait_for_instances_status: %s", err)
+	}
+	config := meta.(*transport_tpg.Config)
+	if err := tpgresource.ParseImportId([]string{"projects/(?P<project>[^/]+)/regions/(?P<region>[^/]+)/instanceGroupManagers/(?P<name>[^/]+)", "(?P<project>[^/]+)/(?P<region>[^/]+)/(?P<name>[^/]+)", "(?P<region>[^/]+)/(?P<name>[^/]+)", "(?P<name>[^/]+)"}, d, config); err != nil {
+		return nil, err
+	}
+
+	// Replace import id for the resource id
+	id, err := tpgresource.ReplaceVars(d, config, "projects/{{"{{"}}project{{"}}"}}/regions/{{"{{"}}region{{"}}"}}/instanceGroupManagers/{{"{{"}}name{{"}}"}}")
+	if err != nil {
+		return nil, fmt.Errorf("Error constructing id: %s", err)
+	}
+	d.SetId(id)
+
+	return []*schema.ResourceData{d}, nil
+}
+
+func emptyOrUnsetBlockDiffSuppress(k, old, new string, d *schema.ResourceData) bool {
+	oldFlexPolicy, newFlexPolicy := d.GetChange("instance_flexibility_policy")
+
+	newFlexPolicyIsNullOrEmpty := isNullOrEmptyBlock(newFlexPolicy)
+	oldFlexPolicyIsNullOrEmpty := isNullOrEmptyBlock(oldFlexPolicy)
+
+	if newFlexPolicyIsNullOrEmpty && oldFlexPolicyIsNullOrEmpty {
+		return true // Both new and old value is either nil or empty
+	}
+	return false // At least any of the two value is not nil or empty
+}
+
+func isNullOrEmptyBlock(flexPolicy any) bool {
+	flexPolicyList, ok := flexPolicy.([]any)
+	if !ok || len(flexPolicyList) == 0 {
+		return true // No flexibilityPolicy, equivalent to optional
+	}
+
+	flexibilityPolicy, ok := flexPolicyList[0].(map[string]any)
+	if !ok || flexibilityPolicy == nil {
+		return true // Empty flex policy
+	}
+
+	if instanceSelectionRaw, exists := flexibilityPolicy["instance_selections"]; exists {
+		selections, selOk := instanceSelectionRaw.(*schema.Set)
+		if selOk && selections.Len() == 0 {
+			return true // Empty set of instance selections
+		}
+	}
+
+	return false // Return false for non-empty flex policy
+}
+
+func init() {
+	registry.Schema{
+		Name: "google_compute_region_instance_group_manager",
+		ProductName: "compute",
+		Type: registry.SchemaTypeResource,
+		Schema: ResourceComputeRegionInstanceGroupManager(),
+	}.Register()
+}

@@ -9,6 +9,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 	"github.com/hashicorp/terraform-provider-google/google/acctest"
+	_ "github.com/hashicorp/terraform-provider-google/google/services/secretmanager"
 )
 
 func TestAccDataSourceSecretManagerSecrets_basic(t *testing.T) {
@@ -30,11 +31,9 @@ func TestAccDataSourceSecretManagerSecrets_basic(t *testing.T) {
 						"data.google_secret_manager_secrets.foo",
 						"google_secret_manager_secret.foo",
 						map[string]struct{}{
-							"id":               {},
-							"project":          {},
-							"effective_labels": {},
-							"labels":           {},
-							"terraform_labels": {},
+							"id":              {},
+							"project":         {},
+							"deletion_policy": {},
 						},
 					),
 				),
@@ -59,6 +58,16 @@ resource "google_secret_manager_secret" "foo" {
       }
     }
   }
+
+  labels = {
+    label = "my-label"
+  }
+
+  annotations = {
+    key1 = "value1"
+  }
+
+  version_destroy_ttl = "360000s"
 }
 
 data "google_secret_manager_secrets" "foo" {
@@ -89,11 +98,9 @@ func TestAccDataSourceSecretManagerSecrets_filter(t *testing.T) {
 						"google_secret_manager_secret.foo",
 						"google_secret_manager_secret.bar",
 						map[string]struct{}{
-							"id":               {},
-							"project":          {},
-							"effective_labels": {},
-							"labels":           {},
-							"terraform_labels": {},
+							"id":              {},
+							"project":         {},
+							"deletion_policy": {},
 						},
 					),
 				),
@@ -118,6 +125,14 @@ resource "google_secret_manager_secret" "foo" {
       }
     }
   }
+
+  labels = {
+    label = "my-label"
+  }
+
+  annotations = {
+    key1 = "value1"
+  }
 }
 
 resource "google_secret_manager_secret" "bar" {
@@ -129,6 +144,14 @@ resource "google_secret_manager_secret" "bar" {
         location = "us-east5"
       }
     }
+  }
+
+  labels = {
+    label= "my-label2"
+  }
+
+  annotations = {
+    key1 = "value1" 
   }
 }
 
@@ -211,7 +234,7 @@ func checkFieldsMatchForDataSourceStateAndResourceState(dsAttr, rsAttr map[strin
 	return nil
 }
 
-// This function checks state match for resourceName and asserts the absense of resourceName2 in data source
+// This function checks state match for resourceName and asserts the absence of resourceName2 in data source
 func checkListDataSourceStateMatchesResourceStateWithIgnoresForAppliedFilter(dataSourceName, resourceName, resourceName2 string, ignoreFields map[string]struct{}) func(*terraform.State) error {
 	return func(s *terraform.State) error {
 		ds, ok := s.RootModule().Resources[dataSourceName]

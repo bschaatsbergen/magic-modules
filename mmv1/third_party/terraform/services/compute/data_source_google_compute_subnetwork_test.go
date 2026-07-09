@@ -7,6 +7,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 	"github.com/hashicorp/terraform-provider-google/google/acctest"
+	_ "github.com/hashicorp/terraform-provider-google/google/services/compute"
 	"github.com/hashicorp/terraform-provider-google/google/tpgresource"
 )
 
@@ -47,9 +48,13 @@ func testAccDataSourceGoogleSubnetworkCheck(data_source_name string, resource_na
 			"id",
 			"name",
 			"description",
+			"subnetwork_id",
 			"ip_cidr_range",
 			"private_ip_google_access",
+			"external_ipv6_prefix",
 			"internal_ipv6_prefix",
+			"stack_type",
+			"ipv6_access_type",
 			"secondary_ip_range",
 		}
 

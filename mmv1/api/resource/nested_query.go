@@ -13,12 +13,14 @@
 
 package resource
 
+import (
+	"fmt"
+)
+
 // Metadata for resources that are nested within a parent resource, as
 // a list of resources or single object within the parent.
 // e.g. Fine-grained resources
 type NestedQuery struct {
-	// google.YamlValidator
-
 	// A list of keys to traverse in order.
 	// i.e. backendBucket --> cdnPolicy.signedUrlKeyNames
 	// should be ["cdnPolicy", "signedUrlKeyNames"]
@@ -43,10 +45,10 @@ type NestedQuery struct {
 	ModifyByPatch bool `yaml:"modify_by_patch"`
 }
 
-// def validate
-//   super
+func (q *NestedQuery) Validate(rName string) (es []error) {
+	if len(q.Keys) == 0 {
+		es = append(es, fmt.Errorf("missing `keys` for `nested_query` in resource %s", rName))
+	}
 
-//   check :keys, type: Array, item_type: String, required: true
-//   check :is_list_of_ids, type: :boolean, default: false
-//   check :modify_by_patch, type: :boolean, default: false
-// end
+	return es
+}

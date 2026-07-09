@@ -1,0 +1,80 @@
+## Test report
+
+{{if or (gt (len .NotRunBetaTests) 0) (gt (len .NotRunGATests) 0)}}
+{{if gt (len .NotRunBetaTests) 0}}
+> [!IMPORTANT]
+> **Manual Verification Required**
+>
+> VCR cannot automatically execute the following tests added in this PR. Please verify them manually:
+>
+{{range .NotRunBetaTests}}> {{color "red" .}}
+{{end}}
+{{end}}
+
+{{if gt (len .NotRunGATests) 0}}
+> [!IMPORTANT]
+> **Manual Verification Required (GA-only additions)**
+>
+> The following tests are GA-only additions and cannot be run by VCR in Beta mode. Please verify them manually:
+>
+{{range .NotRunGATests}}> {{color "red" .}}
+{{end}}
+{{end}}
+{{end}}
+
+#### Analytics
+| Total Tests | Passed | Skipped | Affected |
+| :--- | :--- | :--- | :--- |
+| {{add (add (len .ReplayingResult.PassedTests) (len .ReplayingResult.SkippedTests)) (len .ReplayingResult.FailedTests) }} | {{len .ReplayingResult.PassedTests}} | {{len .ReplayingResult.SkippedTests}} | {{len .ReplayingResult.FailedTests}} |
+
+<details>
+<summary><b>Affected Service Packages</b></summary>
+
+{{if .RunFullVCR}}
+* All service packages are affected
+{{else if gt (len .AffectedServices) 0}}
+{{range .AffectedServices}}{{. | printf "* %s\n"}}{{end}}
+{{else}}
+* None
+{{end}}
+</details>
+
+[Learn how VCR tests work](https://googlecloudplatform.github.io/magic-modules/develop/test/test/)
+
+---
+
+**Step 1: Replaying Mode**
+
+{{ if gt (len .ReplayingResult.FailedTests) 0 }}
+#### Action taken
+
+Found {{len .ReplayingResult.FailedTests}} affected test(s) by replaying old test recordings. Starting RECORDING based on the most recent commit.
+
+{{ if gt (len .ReplayingResult.FailedTests) 100 -}}
+More than 100 tests failed in replaying; this is too many to display on GitHub. View the [Cloud Build logs]({{$.BuildStepUrl}}) to see the full list.
+{{- else -}}
+<details>
+<summary>Click here to see the affected tests</summary>
+
+{{range .ReplayingResult.FailedTests}}{{. | printf "* %s\n"}}{{end}}
+</details>
+{{- end }}
+{{ else }}
+{{ if .ReplayingErr }}
+> [!CAUTION]
+> {{color "red" "Errors occurred during REPLAYING mode. Please check the build log for details."}}
+{{ else }}
+{{color "green" "**All tests passed in Replaying mode! No Recording was needed.**"}}
+
+{{ if or (gt (len .NotRunBetaTests) 0) (gt (len .NotRunGATests) 0) }}
+> [!CAUTION]
+> **Issues requiring attention before PR completion**
+>
+> {{color "red" "**Manual Verification Required**: New tests were added that are skipped in presubmit tests. See the \"Manual Verification Required\" section at the top for details."}}
+>
+> Please address these issues to complete your PR. If you believe these detections are incorrect or unrelated to your change, please raise the concern with your reviewer.
+{{ end }}
+{{ end }}
+{{ end }}
+
+View the [replaying VCR build log](https://storage.cloud.google.com/{{.LogBucket}}/{{.Version}}/refs/heads/{{.Head}}/artifacts/{{.BuildID}}/build-log/replaying_test.log)

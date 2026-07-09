@@ -2,8 +2,11 @@ package compute
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-google/google/registry"
 	"github.com/hashicorp/terraform-provider-google/google/tpgresource"
 	transport_tpg "github.com/hashicorp/terraform-provider-google/google/transport"
 )
@@ -15,12 +18,25 @@ func DataSourceGoogleComputeNetwork() *schema.Resource {
 		Schema: map[string]*schema.Schema{
 			"name": {
 				Type:     schema.TypeString,
-				Required: true,
+				Optional: true,
+				Computed: true,
 			},
 
 			"description": {
 				Type:     schema.TypeString,
 				Computed: true,
+			},
+
+			"network_id": {
+				Type:     schema.TypeInt,
+				Computed: true,
+			},
+
+			// Deprecated in favor of network_id
+			"numeric_id": {
+				Type:       schema.TypeString,
+				Computed:   true,
+				Deprecated: "`numeric_id` is deprecated and will be removed in a future major release. Use `network_id` instead.",
 			},
 
 			"gateway_ipv4": {
@@ -33,14 +49,21 @@ func DataSourceGoogleComputeNetwork() *schema.Resource {
 				Computed: true,
 			},
 
+			"network_profile": {
+				Type:     schema.TypeString,
+				Optional: true,
+			},
+
 			"self_link": {
 				Type:     schema.TypeString,
+				Optional: true,
 				Computed: true,
 			},
 
 			"project": {
 				Type:     schema.TypeString,
 				Optional: true,
+				Computed: true,
 			},
 
 			"subnetworks_self_links": {
@@ -59,17 +82,56 @@ func dataSourceGoogleComputeNetworkRead(d *schema.ResourceData, meta interface{}
 		return err
 	}
 
-	project, err := tpgresource.GetProject(d, config)
-	if err != nil {
-		return err
+	var project, name string
+
+	if v, ok := d.GetOk("self_link"); ok {
+		// Parse project and name from the self_link.
+		// Network self_links have the form:
+		// https://www.googleapis.com/compute/v1/projects/{project}/global/networks/{name}
+		// or a partial path like projects/{project}/global/networks/{name}
+		selfLink := v.(string)
+		nameFromLink := tpgresource.GetResourceNameFromSelfLink(selfLink)
+		if nameFromLink == "" {
+			return fmt.Errorf("invalid self_link %q: could not extract network name", selfLink)
+		}
+		name = nameFromLink
+
+		// Extract project from self_link
+		parts := strings.Split(selfLink, "/")
+		for i, part := range parts {
+			if part == "projects" && i+1 < len(parts) {
+				project = parts[i+1]
+				break
+			}
+		}
+		if project == "" {
+			// Fall back to provider project
+			project, err = tpgresource.GetProject(d, config)
+			if err != nil {
+				return err
+			}
+		}
+	} else if v, ok := d.GetOk("name"); ok {
+		name = v.(string)
+		project, err = tpgresource.GetProject(d, config)
+		if err != nil {
+			return err
+		}
+	} else {
+		return fmt.Errorf("must provide either `self_link` or `name`")
 	}
-	name := d.Get("name").(string)
 
 	id := fmt.Sprintf("projects/%s/global/networks/%s", project, name)
 
-	network, err := config.NewComputeClient(userAgent).Networks.Get(project, name).Do()
+	network, err := NewClient(config, userAgent).Networks.Get(project, name).Do()
 	if err != nil {
 		return transport_tpg.HandleDataSourceNotFoundError(err, d, fmt.Sprintf("Network Not Found : %s", name), id)
+	}
+	if err := d.Set("name", network.Name); err != nil {
+		return fmt.Errorf("Error setting name: %s", err)
+	}
+	if err := d.Set("project", project); err != nil {
+		return fmt.Errorf("Error setting project: %s", err)
 	}
 	if err := d.Set("gateway_ipv4", network.GatewayIPv4); err != nil {
 		return fmt.Errorf("Error setting gateway_ipv4: %s", err)
@@ -77,15 +139,33 @@ func dataSourceGoogleComputeNetworkRead(d *schema.ResourceData, meta interface{}
 	if err := d.Set("internal_ipv6_range", network.InternalIpv6Range); err != nil {
 		return fmt.Errorf("Error setting internal_ipv6_range: %s", err)
 	}
+	if err := d.Set("network_profile", network.NetworkProfile); err != nil {
+		return fmt.Errorf("Error setting network_profile: %s", err)
+	}
 	if err := d.Set("self_link", network.SelfLink); err != nil {
 		return fmt.Errorf("Error setting self_link: %s", err)
 	}
 	if err := d.Set("description", network.Description); err != nil {
 		return fmt.Errorf("Error setting description: %s", err)
 	}
+	if err := d.Set("network_id", network.Id); err != nil {
+		return fmt.Errorf("Error setting network_id: %s", err)
+	}
+	if err := d.Set("numeric_id", strconv.Itoa(int(network.Id))); err != nil {
+		return fmt.Errorf("Error setting numeric_id: %s", err)
+	}
 	if err := d.Set("subnetworks_self_links", network.Subnetworks); err != nil {
 		return fmt.Errorf("Error setting subnetworks_self_links: %s", err)
 	}
 	d.SetId(id)
 	return nil
+}
+
+func init() {
+	registry.Schema{
+		Name:        "google_compute_network",
+		ProductName: "compute",
+		Type:        registry.SchemaTypeDataSource,
+		Schema:      DataSourceGoogleComputeNetwork(),
+	}.Register()
 }

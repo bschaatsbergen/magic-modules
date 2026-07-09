@@ -4,7 +4,7 @@ description: |-
   Ensures that a member:role pairing does not exist in a project's IAM policy.
 ---
 
-# google_project_iam\member_remove
+# google_project_iam_member_remove
 
 Ensures that a member:role pairing does not exist in a project's IAM policy. 
 
@@ -24,12 +24,12 @@ until the configuration is corrected.
 For more information see
 [the official documentation](https://cloud.google.com/iam/docs/granting-changing-revoking-access)
 and
-[API reference](https://cloud.google.com/resource-manager/reference/rest/v1/projects/setIamPolicy).
+[API reference](https://docs.cloud.google.com/resource-manager/reference/rest/v1/projects/setIamPolicy).
 
 ## Example Usage
 
 ```hcl
-data "google_project" "target_project {}
+data "google_project" "target_project" {}
 
 resource "google_project_iam_member_remove" "foo" {
   role     = "roles/editor"
@@ -52,4 +52,11 @@ The following arguments are supported:
   * **serviceAccount:{emailid}**: An email address that represents a service account. For example, my-other-app@appspot.gserviceaccount.com.
   * **group:{emailid}**: An email address that represents a Google group. For example, admins@example.com.
   * **domain:{domain}**: A G Suite domain (primary, instead of alias) name that represents all the users of that domain. For example, google.com or example.com.
+
+* `deletion_policy` - (Optional) Whether Terraform will be prevented from destroying the resource. Defaults to "DELETE".
+    When a 'terraform destroy' or 'terraform apply' would delete the resource,
+    the command will fail if this field is set to "PREVENT" in Terraform state.
+    When set to "ABANDON", the command will remove the resource from Terraform
+    management without updating or deleting the resource in the API.
+    When set to "DELETE", deleting the resource is allowed.
 

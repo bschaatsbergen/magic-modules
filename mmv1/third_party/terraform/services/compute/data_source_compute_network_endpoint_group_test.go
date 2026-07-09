@@ -7,6 +7,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 	"github.com/hashicorp/terraform-provider-google/google/acctest"
+	_ "github.com/hashicorp/terraform-provider-google/google/services/compute"
 )
 
 func TestAccDataSourceComputeNetworkEndpointGroup(t *testing.T) {
@@ -61,6 +62,11 @@ func testAccDataSourceComputeNetworkEndpointGroupCheck(data_source_name string, 
 				)
 			}
 		}
+
+		if v, ok := ds_attr["generated_id"]; !ok || v == "" {
+			return fmt.Errorf("generated_id is not set")
+		}
+
 		return nil
 	}
 }
